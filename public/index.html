@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LabBridge | Clinical Intelligence Platform</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
+      colors: {
+        clinical: {
+          50: '#f0f4f8', 100: '#d9e2ec', 200: '#bcccdc', 300: '#9fb3c8',
+          400: '#829ab1', 500: '#627d98', 600: '#486581', 700: '#334e68',
+          800: '#243b53', 900: '#102a43',
+        },
+        medical: {
+          blue: '#2563eb', blueLight: '#dbeafe', emerald: '#059669',
+          emeraldLight: '#d1fae5', amber: '#d97706', amberLight: '#fef3c7',
+          rose: '#dc2626', roseLight: '#fee2e2', slate: '#64748b',
+        }
+      }
+    }
+  }
+}
+</script>
+<style>
+body { background-color: #f8fafc; font-feature-settings: "cv02","cv03","cv04","cv11"; }
+.card-hover { transition: all 0.2s cubic-bezier(0.4,0,0.2,1); }
+.card-hover:hover { transform: translateY(-1px); box-shadow: 0 4px 20px -4px rgba(0,0,0,0.08), 0 2px 8px -2px rgba(0,0,0,0.04); }
+.hidden-workspace { display: none !important; }
+.result-screen { position: fixed; inset: 0; z-index: 40; max-width: 84rem; margin: 0 auto; overflow-y: auto; background: #f8fafc; padding: 2rem 1.5rem 4rem; }
+@media print { .result-screen { position: static; inset: auto; max-width: none; margin: 0; overflow: visible; padding: 0; } }
+@keyframes fadeInUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+@keyframes pulse-soft { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+.animate-fade-in-up { animation: fadeInUp 0.4s cubic-bezier(0.4,0,0.2,1) forwards; }
+.animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+.input-field { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.input-field:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
+.nav-item { position: relative; transition: all 0.15s ease; }
+.nav-item::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%); width:3px; height:0; background:#2563eb; border-radius:0 2px 2px 0; transition: height 0.2s ease; }
+.nav-item.active::before { height: 24px; }
+.nav-item.active { background: rgba(37,99,235,0.06); color: #2563eb; }
+.table-row { transition: background-color 0.12s ease; }
+.table-row:hover { background-color: #f8fafc; }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.02em; text-transform: uppercase; }
+.section-header { font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; }
+.data-value { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; color: #0f172a; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+</style>
+<base target="_blank">
+<base target="_blank">
+<base target="_blank">
+</head>
+<body class="font-sans text-slate-800 antialiased">
+
+<!-- LOGIN -->
+<div id="login-screen" class="min-h-screen w-full flex items-center justify-center bg-clinical-900 px-4">
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+      <div class="h-12 w-12 rounded-xl bg-medical-blue flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/20">
+        <span class="font-mono font-bold text-white text-lg tracking-tight">LB</span>
+      </div>
+      <h1 class="text-lg font-bold tracking-tight text-white">LabBridge</h1>
+      <p class="text-sm text-clinical-400 mt-1">Clinical Intelligence Platform</p>
+    </div>
+    <form id="loginForm" class="bg-white rounded-2xl p-8 shadow-2xl space-y-5">
+      <div>
+        <label class="section-header mb-2 block">Staff ID or Email</label>
+        <input type="text" id="loginId" required autocomplete="username" class="input-field w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 focus:outline-none" placeholder="Enter your staff ID">
+      </div>
+      <div>
+        <label class="section-header mb-2 block">Password</label>
+        <input type="password" id="loginPassword" required autocomplete="current-password" class="input-field w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 focus:outline-none" placeholder="Enter your password">
+      </div>
+      <p id="loginError" class="hidden-workspace text-sm text-medical-rose font-medium bg-medical-roseLight border border-rose-200 rounded-xl px-4 py-3"></p>
+      <button type="submit" id="loginSubmitBtn" class="w-full bg-medical-blue hover:bg-blue-700 text-white font-semibold py-3.5 rounded-xl text-sm transition-all duration-150">Sign In to LabBridge</button>
+      <p class="text-xs text-slate-400 text-center leading-relaxed">Access is restricted by role. Contact your system administrator for assistance.</p>
+    </form>
+  </div>
+</div>
+
+<!-- APP SHELL -->
+<div id="app-shell" class="hidden-workspace flex min-h-screen">
+
+<!-- SIDEBAR -->
+<aside class="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
+  <div class="p-5 border-b border-slate-100">
+    <div class="flex items-center space-x-3">
+      <div class="h-9 w-9 rounded-lg bg-medical-blue flex items-center justify-center shadow-md shadow-blue-500/15">
+        <span class="font-mono font-bold text-white text-sm">LB</span>
+      </div>
+      <div>
+        <h1 class="text-sm font-bold tracking-tight text-slate-900">LabBridge</h1>
+        <p class="text-[10px] text-slate-400 font-mono">v2.0 Clinical</p>
+      </div>
+    </div>
+  </div>
+  <nav class="flex-1 p-3 space-y-0.5">
+    <button onclick="switchTab('dashboard-tab')" id="btn-dashboard-tab" class="nav-item active w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z"></path></svg>
+      <span>Dashboard</span>
+    </button>
+    <button onclick="switchTab('input-test-tab')" id="btn-input-test-tab" class="nav-item w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+      <span>New Test Entry</span>
+    </button>
+    <button onclick="switchTab('clinician-tab')" id="btn-clinician-tab" class="nav-item w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+      <span>Verified Reports</span>
+    </button>
+    <button onclick="switchTab('surveillance-tab')" id="btn-surveillance-tab" class="nav-item w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+      <span>Disease Surveillance</span>
+    </button>
+    <button onclick="switchTab('admin-tab')" id="btn-admin-tab" class="nav-item w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+      <span>System Settings</span>
+    </button>
+  </nav>
+  <div class="p-4 border-t border-slate-100">
+    <div class="flex items-center space-x-3 p-3 bg-slate-50 rounded-xl">
+      <div class="h-8 w-8 rounded-full bg-medical-blue/10 flex items-center justify-center border border-medical-blue/20">
+        <span class="text-xs font-mono font-bold text-medical-blue" id="sidebar-role-badge">--</span>
+      </div>
+      <div class="min-w-0">
+        <p class="text-xs font-semibold text-slate-800 truncate" id="sidebar-role-title">--</p>
+        <p class="text-[10px] text-slate-400 font-mono truncate" id="sidebar-role-id">--</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- MAIN CONTENT -->
+<main class="flex-1 flex flex-col min-w-0 bg-slate-50">
+
+<!-- HEADER -->
+<header class="h-14 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-40">
+  <div class="flex items-center space-x-2 text-xs text-slate-500">
+    <span class="font-medium">LabBridge</span>
+    <span class="text-slate-300">/</span>
+    <span id="breadcrumb" class="text-slate-900 font-semibold font-mono uppercase text-[11px] tracking-wide">Dashboard</span>
+  </div>
+  <div class="flex items-center space-x-4">
+    <div class="text-right leading-tight">
+      <p class="text-xs font-semibold text-slate-800" id="userDisplayName">--</p>
+      <p class="text-[10px] text-slate-400 font-mono uppercase tracking-wide" id="userRoleLabel">--</p>
+    </div>
+    <button onclick="logout()" class="text-xs font-mono text-slate-500 hover:text-medical-rose border border-slate-200 hover:border-rose-200 rounded-lg px-3 py-1.5 transition-colors">Sign Out</button>
+    <div id="engineStatusPill" class="flex items-center space-x-2 text-[11px] font-mono bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200 text-slate-500">
+      <span id="engineStatusDot" class="h-1.5 w-1.5 rounded-full bg-slate-300"></span>
+      <span id="engineStatusBadge">Checking...</span>
+    </div>
+  </div>
+</header>
+
+<div class="flex-1 p-6 max-w-7xl w-full mx-auto overflow-y-auto">
+
+<!-- DASHBOARD -->
+<div id="dashboard-tab" class="tab-pane space-y-6">
+  <div>
+    <h2 class="text-xl font-bold tracking-tight text-slate-900">Laboratory Operations</h2>
+    <p class="text-sm text-slate-500 mt-0.5">Overview of today's activity and system status.</p>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="bg-white border border-slate-200 rounded-xl p-5 card-hover">
+      <p class="section-header mb-2">Patients Processed</p>
+      <p class="text-2xl font-bold text-slate-900" id="dash-patients-count">--</p>
+      <p class="text-xs text-slate-400 mt-1" id="dash-patients-note">Loading...</p>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-xl p-5 card-hover">
+      <p class="section-header mb-2">Pending Review</p>
+      <p class="text-2xl font-bold text-medical-amber" id="dash-pending-count">--</p>
+      <p class="text-xs text-medical-amber mt-1" id="dash-pending-note">Awaiting verification</p>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-xl p-5 card-hover" id="dash-card-outbreak">
+      <p class="section-header mb-2">Outbreak Alerts</p>
+      <p class="text-2xl font-bold text-medical-rose" id="dash-outbreak-flags">--</p>
+      <p class="text-xs text-slate-400 mt-1" id="dash-outbreak-note">Loading...</p>
+    </div>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white border border-slate-200 rounded-xl p-6">
+      <h3 class="section-header mb-4 pb-3 border-b border-slate-100">Recent Verified Tests</h3>
+      <div class="space-y-3" id="recent-activity-feed"><p class="text-xs text-slate-400 font-mono">Loading activity...</p></div>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-xl p-6 hidden-workspace" id="system-status-card">
+      <h3 class="section-header mb-4 pb-3 border-b border-slate-100">System Status</h3>
+      <div class="space-y-2" id="system-telemetry-list"><p class="text-xs text-slate-400 font-mono">Loading services...</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- NEW TEST ENTRY -->
+<div id="input-test-tab" class="tab-pane hidden-workspace space-y-6">
+  <div id="dept-selection-section" class="space-y-6">
+    <div>
+      <h2 class="text-xl font-bold tracking-tight text-slate-900">Select Department</h2>
+      <p class="text-sm text-slate-500 mt-0.5">Choose a department to begin test entry.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <button onclick="selectDepartment('Hematology')" class="bg-white border border-slate-200 rounded-xl p-5 text-left card-hover">
+        <div class="h-10 w-10 rounded-lg bg-rose-50 flex items-center justify-center mb-3">
+          <svg class="w-5 h-5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+        </div>
+        <h4 class="font-semibold text-slate-900 text-sm">Hematology</h4>
+        <p class="text-xs text-slate-400 mt-1">Blood count, coagulation, grouping</p>
+      </button>
+      <button onclick="selectDepartment('Clinical Chemistry')" class="bg-white border border-slate-200 rounded-xl p-5 text-left card-hover">
+        <div class="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center mb-3">
+          <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+        </div>
+        <h4 class="font-semibold text-slate-900 text-sm">Clinical Chemistry</h4>
+        <p class="text-xs text-slate-400 mt-1">Metabolic, renal, liver panels</p>
+      </button>
+      <button onclick="selectDepartment('Microbiology')" class="bg-white border border-slate-200 rounded-xl p-5 text-left card-hover">
+        <div class="h-10 w-10 rounded-lg bg-emerald-50 flex items-center justify-center mb-3">
+          <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+        </div>
+        <h4 class="font-semibold text-slate-900 text-sm">Microbiology</h4>
+        <p class="text-xs text-slate-400 mt-1">Cultures, stains, sensitivity</p>
+      </button>
+      <button onclick="selectDepartment('Parasitology')" class="bg-white border border-slate-200 rounded-xl p-5 text-left card-hover">
+        <div class="h-10 w-10 rounded-lg bg-amber-50 flex items-center justify-center mb-3">
+          <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+        </div>
+        <h4 class="font-semibold text-slate-900 text-sm">Parasitology</h4>
+        <p class="text-xs text-slate-400 mt-1">Malaria, stool O and P, urinalysis</p>
+      </button>
+    </div>
+  </div>
+
+  <div id="dept-workspace-section" class="hidden-workspace space-y-6">
+    <div class="flex items-center space-x-3 pb-4 border-b border-slate-200">
+      <button onclick="backToDepartments()" class="text-xs font-mono text-medical-blue hover:text-blue-800 transition-colors flex items-center">
+        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        Back to Departments
+      </button>
+      <span class="text-slate-300">|</span>
+      <h3 id="current-dept-title" class="text-sm font-bold text-slate-900 uppercase font-mono tracking-wide">--</h3>
+    </div>
+
+    <form id="labForm" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <h4 class="section-header pb-2 border-b border-slate-100">Patient Information</h4>
+        <div>
+          <label class="section-header mb-1.5 block">Patient ID</label>
+          <input type="text" id="patientId" required placeholder="e.g. PT-0001" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+        </div>
+        <div>
+          <label class="section-header mb-1.5 block">Full Name</label>
+          <input type="text" id="patientName" required placeholder="Patient full name" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="section-header mb-1.5 block">Age</label>
+            <input type="text" id="patientAge" required placeholder="Years" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+          <div>
+            <label class="section-header mb-1.5 block">Sex</label>
+            <select id="patientSex" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none cursor-pointer">
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="section-header mb-1.5 block">Requesting Clinician</label>
+          <input type="text" id="clinician" required placeholder="Doctor name and facility" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+        </div>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <h4 class="section-header pb-2 border-b border-slate-100">Test Details</h4>
+        <div>
+          <label class="section-header mb-1.5 block">Test Panel</label>
+          <select id="testName" onchange="autoFillTestRanges()" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none cursor-pointer"></select>
+        </div>
+        <div id="numericFieldsGroup">
+          <div>
+            <label class="section-header mb-1.5 block">Result Value</label>
+            <input type="text" id="value" required placeholder="Enter measured result" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+        </div>
+        <div id="qualitativeFieldGroup" class="hidden-workspace space-y-3">
+          <div>
+            <label class="section-header mb-1.5 block">Scientist Observation</label>
+            <textarea id="qualitativeFreeform" rows="6" placeholder="Describe the finding in detail (up to ~200 words)..." class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none"></textarea>
+          </div>
+        </div>
+        
+        <div class="grid grid-cols-2 gap-3" id="unitFieldsGroup">
+          <div>
+            <label class="section-header mb-1.5 block">Unit</label>
+            <input type="text" id="unit" required placeholder="--" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+          <div>
+            <label class="section-header mb-1.5 block">Analyzer</label>
+            <input type="text" id="analyzer" placeholder="e.g. Mindray BS-240" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3" id="rangeFieldsGroup">
+          <div>
+            <label class="section-header mb-1.5 block">Reference Range</label>
+            <input type="text" id="refRange" required placeholder="--" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+          <div>
+            <label class="section-header mb-1.5 block">Specimen Type</label>
+            <input type="text" id="sampleType" required placeholder="--" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none">
+          </div>
+        </div>
+        <div>
+          <label class="section-header mb-1.5 block">Patient Language</label>
+          <select id="language" class="input-field w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none cursor-pointer">
+            <option value="SIMPLIFIED PLAIN ENGLISH">Simplified Plain English</option>
+            <option value="NIGERIAN/GHANAIAN PIDGIN">Nigerian / Ghanaian Pidgin</option>
+            <option value="YORUBA">Yoruba</option>
+            <option value="HAUSA">Hausa</option>
+            <option value="IGBO">Igbo</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between">
+        <div>
+          <h4 class="section-header pb-2 border-b border-slate-100">Quality Control</h4>
+          <div class="space-y-3 mt-4" id="qcFlagsPanel">
+            <p class="text-xs text-slate-400 font-mono">Loading QC status...</p>
+          </div>
+        </div>
+        <div class="mt-6">
+          <button type="submit" id="processBtn" class="w-full bg-medical-blue hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-all duration-150 text-sm">Analyze and Generate Draft</button>
+          <p class="text-[11px] text-slate-400 text-center mt-3 leading-relaxed" id="submitNote">Results are analyzed against reference ranges and drafted for scientist review before approval.</p>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div id="loadingState" class="hidden-workspace bg-white border border-slate-200 rounded-xl p-12 text-center">
+    <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-medical-blue mb-6"></div>
+    <div id="aiPipelineSteps" class="max-w-sm mx-auto text-left space-y-3"></div>
+  </div>
+
+  <div id="errorState" class="hidden-workspace bg-medical-roseLight border border-rose-200 rounded-xl p-8 text-center">
+    <svg class="w-8 h-8 text-medical-rose mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+    <h4 class="text-sm font-bold tracking-wide font-mono text-medical-rose uppercase">Processing Error</h4>
+    <p class="text-xs text-rose-700 mt-2" id="errorMessage">The analytical service is temporarily unavailable. Please try again shortly.</p>
+  </div>
+
+  <div id="scientist-workspace-section" class="result-screen hidden-workspace space-y-6">
+    <div>
+      <button onclick="backToInputForm()" class="inline-flex items-center text-sm font-mono text-medical-blue hover:text-blue-800 transition-colors">
+        <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        Back to Test Entry
+      </button>
+    </div>
+    <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+      <div class="flex items-center space-x-2">
+        <span class="h-2 w-2 rounded-full bg-medical-amber animate-pulse-soft"></span>
+        <h3 class="text-xs font-bold tracking-wide text-slate-900 font-mono uppercase">Scientist Review Workspace</h3>
+      </div>
+      <span class="text-[10px] font-mono text-medical-rose bg-medical-roseLight border border-rose-200 px-3 py-1 rounded-full font-bold">Internal Use Only</span>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2 space-y-4">
+        <div class="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+          <div class="flex justify-between items-start">
+            <div>
+              <p class="section-header">Test</p>
+              <p id="reviewTestTitle" class="text-xl font-bold text-slate-900 mt-1">--</p>
+            </div>
+            <div class="text-right" id="reviewMeasuredValueBlock">
+              <p class="section-header">Measured Value</p>
+              <p id="reviewTestValue" class="text-2xl font-mono font-bold text-slate-900 mt-1">--</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-lg text-xs font-mono border border-slate-100" id="reviewMetaGrid">
+            <div><span class="text-slate-400 block mb-1">Reference</span><span id="reviewTestRef" class="data-value">--</span></div>
+            <div><span class="text-slate-400 block mb-1">Status</span><span class="font-bold" id="reviewTestStatus">--</span></div>
+            <div><span class="text-slate-400 block mb-1">Severity</span><span id="reviewSeverityBadge" class="badge bg-slate-100 text-slate-600 border border-slate-200">--</span></div>
+            <div><span class="text-slate-400 block mb-1">QC Status</span><span class="text-medical-emerald font-bold" id="reviewQcStatus">--</span></div>
+          </div>
+          <div id="referenceComparisonBlock">
+            <p class="section-header mb-1.5">Reference Comparison</p>
+            <p id="secRefComparison" class="text-sm text-slate-600">--</p>
+          </div>
+          <div>
+            <p class="section-header mb-1.5">Clinical Significance</p>
+            <p id="secSignificance" class="text-sm text-slate-600">--</p>
+          </div>
+          <div id="rawFindingContainer" class="hidden-workspace pt-3 border-t border-dashed border-slate-200">
+            <p class="section-header mb-1.5">Raw Finding (Internal Review)</p>
+            <p id="reviewRawFinding" class="text-sm text-slate-600 font-mono bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">--</p>
+            <p class="text-[10px] text-amber-600 mt-1">This finding is for scientist review only and does not appear on the patient report.</p>
+          </div>
+          <div class="pt-3 border-t border-slate-200">
+            <p class="section-header mb-1.5">Draft Patient Translation</p>
+            <p id="scientistAiDraft" class="text-sm text-slate-600 italic">--</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between">
+        <div class="space-y-5">
+          <h4 class="section-header pb-2 border-b border-slate-100">Verification Details</h4>
+          <div class="space-y-3 text-xs font-mono">
+            <div><span class="text-slate-400 block mb-0.5">Analyzer</span><span class="text-slate-700 font-semibold" id="reviewAnalyzerTelemetry">--</span></div>
+            <div><span class="text-slate-400 block mb-0.5">Draft Hash</span><span class="text-slate-500" id="generatedHash">--</span></div>
+            <div><span class="text-slate-400 block mb-0.5">Guardrails</span><span class="text-medical-blue" id="guardrailStatus">--</span></div>
+          </div>
+          <div class="space-y-2 pt-2">
+            <div class="flex justify-between items-center text-xs font-mono">
+              <span class="text-slate-500 uppercase tracking-wide">Confidence</span>
+              <span id="confidenceValue" class="font-bold text-slate-800">--</span>
+            </div>
+            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div id="confidenceBar" class="h-full bg-gradient-to-r from-medical-blue to-medical-emerald rounded-full transition-all duration-700" style="width:0%"></div>
+            </div>
+            <button type="button" onclick="toggleReasoning()" id="reasoningToggle" class="w-full text-left text-[11px] font-mono text-medical-blue hover:text-blue-800 flex items-center justify-between pt-1">
+              <span>View AI Reasoning</span>
+              <svg class="w-3 h-3 transition-transform" id="reasoningArrow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </button>
+            <ul id="confidenceReasons" class="hidden-workspace text-[11px] text-slate-500 space-y-1 font-mono pl-1"></ul>
+          </div>
+        </div>
+        <div class="space-y-3 mt-6">
+          <button onclick="approveRecord()" class="w-full bg-medical-emerald hover:bg-emerald-700 text-white font-semibold py-3 px-4 rounded-xl transition-all flex items-center justify-center space-x-2 text-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <span>Verify and Sign Off</span>
+          </button>
+          <button onclick="backToInputForm()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-3 px-4 rounded-xl text-xs transition-all">Modify Test Parameters</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="patient-report-section" class="result-screen hidden-workspace space-y-6">
+    <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+      <div class="flex items-center space-x-2">
+        <span class="h-2 w-2 rounded-full bg-medical-emerald"></span>
+        <h3 class="text-xs font-bold tracking-wide text-slate-900 font-mono uppercase">Verified Patient Report</h3>
+      </div>
+      <div class="flex space-x-2">
+        <button onclick="window.print()" class="bg-medical-blue hover:bg-blue-700 text-white font-medium text-xs py-2 px-4 rounded-lg transition-all">Print Report</button>
+        <button onclick="closeReport()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-xs py-2 px-4 rounded-lg transition-all">Close</button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2 bg-[#FDFCF8] border border-slate-200 rounded-xl p-8 relative">
+        <div class="flex justify-between items-start pb-6 border-b border-slate-200">
+          <div>
+           <h4 class="text-sm font-bold tracking-wide font-mono text-slate-900">PATIENT LABORATORY REPORT</h4> 
+            <p class="text-xs text-slate-400 mt-1" id="reportFacilityName">--</p>
+          </div>
+          <div class="text-right space-y-1">
+            <span class="text-xs font-mono text-slate-500 block" id="reportDateDisplay">DATE: --</span>
+            <span class="inline-flex items-center space-x-1.5 bg-medical-emeraldLight border border-emerald-200 text-medical-emerald px-3 py-1 rounded-full text-[10px] font-mono font-bold">
+              <span class="h-1.5 w-1.5 rounded-full bg-medical-emerald"></span><span>VERIFIED</span>
+            </span>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 py-5 border-b border-slate-100 text-xs">
+          <div><span class="text-slate-400 font-mono uppercase block mb-0.5 text-[10px]">Patient ID</span><span class="font-bold text-slate-800" id="reportPatientId">--</span></div>
+          <div><span class="text-slate-400 font-mono uppercase block mb-0.5 text-[10px]">Name</span><span class="font-bold text-slate-800" id="reportPatientName">--</span></div>
+          <div><span class="text-slate-400 font-mono uppercase block mb-0.5 text-[10px]">Age / Sex</span><span class="font-bold text-slate-800" id="reportPatientBio">--</span></div>
+          <div><span class="text-slate-400 font-mono uppercase block mb-0.5 text-[10px]">Clinician</span><span class="font-bold text-slate-800" id="reportClinician">--</span></div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 py-4 border-b border-slate-100 text-[10px] font-mono">
+          <div><span class="text-slate-400 uppercase block mb-0.5">Scientist</span><span class="text-slate-800 font-bold" id="reportMlsSig">--</span></div>
+          <div><span class="text-slate-400 uppercase block mb-0.5">Timestamp</span><span class="text-slate-800 font-bold" id="reportTimestamp">--</span></div>
+          <div><span class="text-slate-400 uppercase block mb-0.5">Hash</span><span class="text-slate-800 font-bold" id="reportHashShort">--</span></div>
+          <div><span class="text-slate-400 uppercase block mb-0.5">AI Engine</span><span class="text-slate-800 font-bold" id="reportAiVersion">--</span></div>
+          <div><span class="text-slate-400 uppercase block mb-0.5">Analyzer</span><span class="text-slate-800 font-bold" id="reportAnalyzer">--</span></div>
+        </div>
+        <div class="py-6">
+          <table class="w-full text-left text-sm border-collapse">
+            <thead>
+              <tr class="border-b border-slate-200 text-[11px] font-mono text-slate-400 uppercase tracking-wide" id="reportTableHeader">
+                <th class="pb-3 font-medium">Test</th>
+                <th class="pb-3 font-medium text-right">Result</th>
+                <th class="pb-3 font-medium text-right ref-range-col">Reference</th>
+                <th class="pb-3 font-medium text-right unit-col">Unit</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="border-b border-slate-100 text-slate-800">
+                <td class="py-3 font-semibold" id="reportTestName">--</td>
+                <td class="py-3 text-right font-mono font-bold text-slate-900" id="reportValue">--</td>
+                <td class="py-3 text-right font-mono text-slate-600 ref-range-col" id="reportRefRange">--</td>
+                <td class="py-3 text-right font-mono text-slate-600 unit-col" id="reportUnit">--</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="flex justify-between items-center pt-6 mt-6 border-t border-slate-100 text-xs font-mono text-slate-500">
+          <div>
+            <span>Verified by </span>
+<span class="text-medical-emerald font-bold" id="reportVerifierName">--</span>
+            <p class="text-[9px] text-slate-400 mt-0.5" id="reportSecHash">Hash: [--]</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white border border-slate-200 rounded-xl p-6">
+        <div class="flex justify-between items-center pb-3 border-b border-slate-100 mb-4">
+          <h4 class="section-header">Patient Explanation</h4>
+          <span class="text-[10px] px-2 py-0.5 bg-medical-blueLight border border-blue-200 text-medical-blue rounded-full font-mono uppercase font-bold" id="selectedLangBadge">--</span>
+        </div>
+        <div class="flex items-start space-x-3">
+          <div class="h-8 w-8 rounded-full bg-medical-blue flex items-center justify-center text-white text-xs shrink-0 shadow-md shadow-blue-500/15">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+          </div>
+          <div class="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed font-medium text-slate-800" id="reportPatientSummary">--</div>
+        </div>
+        <p class="text-xs text-slate-400 leading-relaxed mt-4">This is a simplified explanation of your test result. It is not a diagnosis. Please consult your doctor for proper medical advice.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- VERIFIED REPORTS -->
+<div id="clinician-tab" class="tab-pane hidden-workspace space-y-6">
+  <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+    <div>
+      <h2 class="text-xl font-bold tracking-tight text-slate-900">Verified Reports</h2>
+      <p class="text-sm text-slate-500 mt-0.5">Cryptographically signed reports ready for clinical review.</p>
+    </div>
+    <div class="flex items-center space-x-2">
+      <input type="text" id="clinicianSearchInput" oninput="filterClinicianTable()" placeholder="Search by Patient ID..."
+        class="input-field w-56 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none">
+      <button onclick="filterClinicianTable()" class="bg-medical-blue hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors">Search</button>
+    </div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <table class="w-full text-left text-sm">
+      <thead>
+        <tr class="border-b border-slate-200 bg-slate-50 text-[10px] font-mono text-slate-500 uppercase tracking-wide">
+          <th class="p-4 pl-6 font-medium">Patient</th>
+          <th class="p-4 font-medium">ID</th>
+          <th class="p-4 font-medium">Test</th>
+          <th class="p-4 text-center font-medium">Status</th>
+          <th class="p-4 text-right pr-6 font-medium">Action</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100" id="clinician-table-body">
+        <tr><td colspan="5" class="p-6 text-center text-xs text-slate-400 font-mono">Loading records...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- DISEASE SURVEILLANCE -->
+<div id="surveillance-tab" class="tab-pane hidden-workspace space-y-6">
+  <div>
+    <h2 class="text-xl font-bold tracking-tight text-slate-900">Disease Surveillance</h2>
+    <p class="text-sm text-slate-500 mt-0.5">Ward-level disease tracking for public health monitoring.</p>
+  </div>
+  <div id="wardStatsGrid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <p class="text-xs text-slate-400 font-mono md:col-span-3">Loading ward data...</p>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-6">
+    <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
+      <h3 class="text-sm font-bold tracking-wide uppercase text-slate-800 font-mono">Ward Breakdown</h3>
+      <div id="surveillanceBreadcrumb" class="text-[11px] font-mono text-slate-500"></div>
+    </div>
+    <div id="surveillanceContent" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <p class="text-xs text-slate-400 font-mono sm:col-span-3">Select a ward above to view details.</p>
+    </div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-6">
+    <h4 class="font-bold text-slate-800 uppercase text-xs font-mono mb-3 tracking-wide">Alert Configuration</h4>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+      <div class="flex justify-between p-3 bg-slate-50 border border-slate-100 rounded-lg"><span class="text-slate-400">Epidemic Threshold</span><span class="text-medical-rose font-bold" id="epidemicLimit">--</span></div>
+      <div class="flex justify-between p-3 bg-slate-50 border border-slate-100 rounded-lg"><span class="text-slate-400">Anonymization</span><span class="text-medical-emerald font-bold" id="anonymizationStatus">--</span></div>
+      <div class="flex justify-between p-3 bg-slate-50 border border-slate-100 rounded-lg"><span class="text-slate-400">Ward Coverage</span><span class="text-slate-800 font-bold" id="wardCoverage">--</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- SYSTEM SETTINGS -->
+<div id="admin-tab" class="tab-pane hidden-workspace space-y-6">
+  <div>
+    <h2 class="text-xl font-bold tracking-tight text-slate-900">System Settings</h2>
+    <p class="text-sm text-slate-500 mt-0.5">Security configuration and system diagnostics.</p>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+      <h3 class="text-sm font-bold tracking-wide uppercase text-slate-800 font-mono pb-3 border-b border-slate-100">Security Controls</h3>
+      <div class="space-y-3">
+        <div class="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
+          <div>
+            <span class="text-xs font-bold text-slate-800 block">Diagnosis Lock</span>
+            <span class="text-[10px] text-slate-400">Prevents AI from using diagnostic language.</span>
+          </div>
+          <span class="text-xs font-mono font-bold text-slate-400" id="strictDiagnosisLockStatus">--</span>
+        </div>
+        <div class="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-lg">
+          <div>
+            <span class="text-xs font-bold text-slate-800 block">AI Fallback</span>
+            <span class="text-[10px] text-slate-400">Switches to backup AI if primary fails.</span>
+          </div>
+          <span class="text-xs font-mono font-bold text-slate-400" id="openaiFallbackStatus">--</span>
+        </div>
+      </div>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+      <h3 class="text-sm font-bold tracking-wide uppercase text-slate-800 font-mono pb-3 border-b border-slate-100">API Traffic Log</h3>
+      <div class="p-3 bg-slate-900 text-slate-300 rounded-lg space-y-1 max-h-56 overflow-y-auto font-mono text-xs" id="apiTraceLog">
+        <p class="text-[10px] text-slate-500">Loading trace...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</main>
+</div>
+
+<!-- Sign-off Overlay -->
+<div id="signOffOverlay" class="hidden-workspace fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center px-4">
+  <div class="bg-white rounded-2xl p-8 w-full max-w-xs shadow-2xl space-y-5 animate-fade-in-up">
+    <h4 class="text-xs font-mono uppercase tracking-wide text-slate-500 text-center">Verifying and Signing Record</h4>
+    <div id="signOffSteps" class="space-y-3"></div>
+  </div>
+</div>
+
+<script>
+const API_BASE = window.LABBRIDGE_API_BASE || (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:3000' : location.origin);
+let session = { token: null, user: null };
+let lastApiResponse = null;
+let activeTranslation = '';
+let activeAnalysis = '';
+let surveillanceWards = [];
+let clinicianRecords = [];
+
+function authHeaders() {
+  return session.token ? { 'Authorization': `Bearer ${session.token}` } : {};
+}
+
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(options.headers || {})
+    }
+  });
+  if (res.status === 401) {
+    clearSession();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.innerText = str === undefined || str === null ? '' : String(str);
+  return div.innerHTML;
+}
+
+function shortHash(h) {
+  if (!h) return '--';
+  return h.length > 10 ? `${h.slice(0, 4)}...${h.slice(-4)}` : h;
+}
+
+// Auth
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('loginError');
+  const submitBtn = document.getElementById('loginSubmitBtn');
+  errorEl.classList.add('hidden-workspace');
+  submitBtn.disabled = true;
+  submitBtn.innerText = 'Signing in...';
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        identifier: document.getElementById('loginId').value,
+        password: document.getElementById('loginPassword').value
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.user) {
+      throw new Error(data.error || 'Invalid credentials.');
+    }
+    session.user = data.user;
+    session.token = data.token || null;
+    enterApp();
+  } catch (err) {
+    errorEl.innerText = err.message || 'Sign in failed. Please check your credentials.';
+    errorEl.classList.remove('hidden-workspace');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerText = 'Sign In to LabBridge';
+  }
+});
+
+async function checkExistingSession() {
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/me`, { credentials: 'include' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.user) {
+      session.user = data.user;
+      enterApp();
+    }
+  } catch (err) {}
+}
+
+function clearSession() {
+  session = { token: null, user: null };
+  document.getElementById('app-shell').classList.add('hidden-workspace');
+  document.getElementById('login-screen').classList.remove('hidden-workspace');
+  document.getElementById('loginPassword').value = '';
+}
+
+function logout() {
+  fetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+  clearSession();
+}
+
+const ROLE_CONFIG = {
+  mls: { badge: 'MLS', title: 'Medical Lab Scientist', defaultTab: 'input-test-tab', tabs: ['dashboard-tab', 'input-test-tab'] },
+  clinician: { badge: 'DR', title: 'Clinician', defaultTab: 'clinician-tab', tabs: ['dashboard-tab', 'clinician-tab'] },
+  surveillance: { badge: 'PHO', title: 'Public Health Officer', defaultTab: 'surveillance-tab', tabs: ['dashboard-tab', 'surveillance-tab'] },
+  admin: { badge: 'ADM', title: 'Administrator', defaultTab: 'dashboard-tab', tabs: ['dashboard-tab', 'clinician-tab', 'surveillance-tab'] }
+};
+
+function enterApp() {
+  document.getElementById('login-screen').classList.add('hidden-workspace');
+  document.getElementById('app-shell').classList.remove('hidden-workspace');
+  const cfg = ROLE_CONFIG[session.user.role] || ROLE_CONFIG.mls;
+  document.getElementById('sidebar-role-badge').innerText = cfg.badge;
+  document.getElementById('sidebar-role-title').innerText = cfg.title;
+  document.getElementById('sidebar-role-id').innerText = `ID: ${session.user.id ?? '--'}`;
+  document.getElementById('userDisplayName').innerText = session.user.name || cfg.title;
+  document.getElementById('userRoleLabel').innerText = cfg.title;
+  ['dashboard-tab', 'input-test-tab', 'clinician-tab', 'surveillance-tab', 'admin-tab'].forEach(t => {
+    const btn = document.getElementById(`btn-${t}`);
+    if (btn) btn.style.display = cfg.tabs.includes(t) ? '' : 'none';
+  });
+  switchTab(cfg.tabs.includes('dashboard-tab') ? 'dashboard-tab' : cfg.defaultTab);
+  pingHealth();
+  setInterval(pingHealth, 30000);
+}
+
+async function pingHealth() {
+  const dot = document.getElementById('engineStatusDot');
+  const badge = document.getElementById('engineStatusBadge');
+  const pill = document.getElementById('engineStatusPill');
+  try {
+    const res = await fetch(`${API_BASE}/api/health`, { credentials: 'include' });
+    if (!res.ok) throw new Error('unhealthy');
+    dot.className = 'h-1.5 w-1.5 rounded-full bg-medical-emerald animate-pulse-soft';
+    badge.innerText = 'System Online';
+    pill.className = 'flex items-center space-x-2 text-[11px] font-mono bg-medical-emeraldLight px-3 py-1.5 rounded-full border border-emerald-200 text-medical-emerald';
+  } catch (err) {
+    dot.className = 'h-1.5 w-1.5 rounded-full bg-medical-rose';
+    badge.innerText = 'System Unreachable';
+    pill.className = 'flex items-center space-x-2 text-[11px] font-mono bg-medical-roseLight px-3 py-1.5 rounded-full border border-rose-200 text-medical-rose';
+  }
+}
+
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-pane').forEach(tab => tab.classList.add('hidden-workspace'));
+  ['scientist-workspace-section', 'patient-report-section', 'loadingState', 'errorState'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden-workspace');
+  });
+  if (tabId === 'input-test-tab') {
+    document.getElementById('dept-workspace-section').classList.add('hidden-workspace');
+    document.getElementById('dept-selection-section').classList.remove('hidden-workspace');
+  }
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    btn.classList.remove('active');
+    btn.classList.add('text-slate-600');
+  });
+  const pane = document.getElementById(tabId);
+  if (!pane) return;
+  pane.classList.remove('hidden-workspace');
+  const activeBtn = document.getElementById(`btn-${tabId}`);
+  if (activeBtn) {
+    activeBtn.classList.add('active');
+    activeBtn.classList.remove('text-slate-600');
+  }
+  const names = {
+    'dashboard-tab': 'Dashboard',
+    'input-test-tab': 'New Test Entry',
+    'clinician-tab': 'Verified Reports',
+    'surveillance-tab': 'Disease Surveillance',
+    'admin-tab': 'System Settings'
+  };
+  document.getElementById('breadcrumb').innerText = names[tabId] || tabId;
+  if (tabId === 'dashboard-tab') loadDashboard();
+  if (tabId === 'clinician-tab') loadClinicianArchive();
+  if (tabId === 'surveillance-tab') loadSurveillance();
+  if (tabId === 'admin-tab') loadAdminConsole();
+}
+
+async function loadDashboard() {
+  const feedEl = document.getElementById('recent-activity-feed');
+  feedEl.innerHTML = `<p class="text-xs text-slate-400 font-mono">Loading activity...</p>`;
+  try {
+    const data = await apiFetch('/api/dashboard/stats');
+    document.getElementById('dash-patients-count').innerText = data.patientsProcessed ?? '--';
+    document.getElementById('dash-patients-note').innerText = 'Today';
+    document.getElementById('dash-pending-count').innerText = data.pendingReview ?? '--';
+    const isClinicianView = session.user && session.user.role === 'clinician';
+    document.getElementById('dash-pending-note').innerText = isClinicianView ? 'Awaiting consultation' : 'Awaiting verification';
+    const outCard = document.getElementById('dash-card-outbreak');
+    if (outCard) outCard.style.display = isClinicianView ? 'none' : '';
+    document.getElementById('dash-outbreak-flags').innerText = data.outbreakFlags ?? '--';
+    document.getElementById('dash-outbreak-note').innerText = (data.outbreakFlags ?? 0) > 0 ? 'Review surveillance data' : 'No alerts today';
+    renderActivityFeed(data.recentActivity || []);
+  } catch (err) {
+    feedEl.innerHTML = `<p class="text-xs text-medical-rose font-mono">Could not load activity: ${escapeHtml(err.message)}</p>`;
+  }
+  const isAdminView = session.user && session.user.role === 'admin';
+  const statusCard = document.getElementById('system-status-card');
+  if (!isAdminView) {
+    if (statusCard) statusCard.classList.add('hidden-workspace');
+    return;
+  }
+  if (statusCard) statusCard.classList.remove('hidden-workspace');
+  document.getElementById('system-telemetry-list').innerHTML = `<p class="text-xs text-slate-400 font-mono">Loading services...</p>`;
+  try {
+    const sys = await apiFetch('/api/system/health');
+    renderSystemTelemetry(sys.services || []);
+  } catch (err) {
+    document.getElementById('system-telemetry-list').innerHTML = `<p class="text-xs text-medical-rose font-mono">Could not load service status.</p>`;
+  }
+}
+
+function renderActivityFeed(items) {
+  const feedEl = document.getElementById('recent-activity-feed');
+  if (!items.length) {
+    feedEl.innerHTML = `<p class="text-xs text-slate-400 font-mono">No verified results yet today.</p>`;
+    return;
+  }
+  const isClinicianView = session.user && session.user.role === 'clinician';
+  feedEl.innerHTML = items.map(item => {
+    if (isClinicianView) {
+      return `
+    <div class="flex items-start space-x-3 text-sm py-2">
+      <span class="h-2 w-2 rounded-full bg-medical-emerald mt-1.5 shrink-0"></span>
+      <div>
+        <p class="font-medium text-slate-800">${escapeHtml(item.summary)}</p>
+      </div>
+    </div>`;
+    }
+    return `
+    <div class="flex items-start space-x-3 text-sm py-2">
+      <span class="h-2 w-2 rounded-full bg-medical-emerald mt-1.5 shrink-0"></span>
+      <div>
+        <p class="font-medium text-slate-800">${escapeHtml(item.summary)}</p>
+        <p class="text-[11px] text-slate-500 font-mono">Result: ${escapeHtml(item.value)}</p>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderSystemTelemetry(services) {
+  const el = document.getElementById('system-telemetry-list');
+  if (!services.length) {
+    el.innerHTML = `<p class="text-xs text-slate-400 font-mono">No services reporting.</p>`;
+    return;
+  }
+  el.innerHTML = services.map(s => `
+    <div class="flex items-center justify-between text-xs font-mono p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+      <span class="text-slate-500">${escapeHtml(s.name)}</span>
+      <span class="${s.status === 'online' ? 'text-medical-emerald font-bold' : s.status === 'idle' ? 'text-slate-400' : 'text-medical-rose font-bold'}">${escapeHtml((s.status || 'unknown').toUpperCase())}</span>
+    </div>`).join('');
+}
+
+// Department / Test Selection
+const DEPARTMENT_TESTS = {
+  'Hematology': [
+    { value: 'Packed Cell Volume (PCV)', label: 'Packed Cell Volume (PCV)' },
+    { value: 'Haemoglobin (Hb)', label: 'Haemoglobin (Hb)' },
+    { value: 'Total WBC Count', label: 'Total WBC Count' },
+    { value: 'Platelet Count', label: 'Platelet Count' },
+    { value: 'ESR', label: 'ESR (Erythrocyte Sedimentation Rate)' },
+    { value: 'Reticulocyte Count', label: 'Reticulocyte Count' },
+    { value: 'Bleeding Time', label: 'Bleeding Time' },
+    { value: 'Prothrombin Time (PT)', label: 'Prothrombin Time (PT)' },
+    { value: 'APTT/PTTK', label: 'APTT / PTTK' },
+    { value: 'Sickling Test', label: 'Sickling Test' },
+    { value: 'Hb Electrophoresis', label: 'Hb Electrophoresis' },
+    { value: 'Hb Solubility', label: 'Hb Solubility Test' },
+    { value: 'Blood Group (ABO & Rh)', label: 'Blood Group (ABO & Rh)' },
+    { value: 'Rhesus Typing', label: 'Rhesus Typing' }
+  ],
+  'Clinical Chemistry': [
+    { value: 'Fasting Blood Glucose', label: 'Fasting Blood Glucose' },
+    { value: 'Random Blood Glucose', label: 'Random Blood Glucose' },
+    { value: 'OGTT', label: 'OGTT (Oral Glucose Tolerance Test)' },
+    { value: 'Serum Urea', label: 'Serum Urea (Kidney Function)' },
+    { value: 'Serum Creatinine', label: 'Serum Creatinine' },
+    { value: 'Sodium (Na+)', label: 'Sodium (Na+)' },
+    { value: 'Potassium (K+)', label: 'Potassium (K+)' },
+    { value: 'Chloride (Cl-)', label: 'Chloride (Cl-)' },
+    { value: 'Uric Acid', label: 'Uric Acid' },
+    { value: 'Total Bilirubin', label: 'Total Bilirubin' },
+    { value: 'Conjugated Bilirubin', label: 'Conjugated Bilirubin' },
+    { value: 'AST (SGOT)', label: 'AST (SGOT)' },
+    { value: 'ALT (SGPT)', label: 'ALT (SGPT)' },
+    { value: 'ALP', label: 'ALP (Alkaline Phosphatase)' },
+    { value: 'Total Protein', label: 'Total Protein' },
+    { value: 'Albumin', label: 'Albumin' },
+    { value: 'Globulin', label: 'Globulin' },
+    { value: 'Total Cholesterol', label: 'Total Cholesterol' },
+    { value: 'HDL Cholesterol', label: 'HDL Cholesterol' },
+    { value: 'LDL Cholesterol', label: 'LDL Cholesterol' },
+    { value: 'Triglycerides', label: 'Triglycerides' },
+    { value: 'CSF Sugar', label: 'CSF Sugar' },
+    { value: 'CSF Protein', label: 'CSF Protein' },
+    { value: 'Urine Dipstick', label: 'Urine Dipstick' }
+  ],
+  'Microbiology': [
+    { value: 'Urine MCS (Culture)', label: 'Urine MCS (Culture)' },
+    { value: 'Stool MCS', label: 'Stool MCS' },
+    { value: 'Gram Stain', label: 'Gram Stain' },
+    { value: 'Antimicrobial Sensitivity', label: 'Antimicrobial Sensitivity' },
+    { value: 'Chlamydia Test', label: 'Chlamydia Test' },
+    { value: 'Mycology (KOH Prep)', label: 'Mycology (KOH Prep)' },
+    { value: 'Widal Test', label: 'Widal Test' },
+    { value: 'VDRL', label: 'VDRL' },
+    { value: 'HIV Rapid Test', label: 'HIV Rapid Test' },
+    { value: 'Hepatitis B Surface Antigen', label: 'Hepatitis B Surface Antigen' },
+    { value: 'Hepatitis C Antibody', label: 'Hepatitis C Antibody' },
+    { value: 'Diagnostic Scan', label: 'Diagnostic MicroScan Target' }
+  ],
+  'Parasitology': [
+    { value: 'Malaria Parasite Smear', label: 'Malaria Parasite Smear' },
+    { value: 'Stool Ova & Parasites', label: 'Stool Ova & Parasites' }
+  ],
+  'Serology': [
+    { value: 'Pregnancy Test (hCG)', label: 'Pregnancy Test (hCG)' }
+  ]
+};
+
+
+const QUALITATIVE_TESTS = [
+  'Blood Group (ABO & Rh)', 'Rhesus Typing', 'Sickling Test', 'Hb Electrophoresis', 'Hb Solubility',
+  'Urine MCS (Culture)', 'Stool MCS', 'Gram Stain', 'Widal Test', 'VDRL',
+  'HIV Rapid Test', 'Hepatitis B Surface Antigen', 'Hepatitis C Antibody',
+  'Pregnancy Test (hCG)', 'Malaria Parasite Smear', 'Stool Ova & Parasites',
+  'Urine Dipstick', 'Antimicrobial Sensitivity', 'Chlamydia Test',
+  'Mycology (KOH Prep)', 'Diagnostic Scan'
+];
+
+function isQualitativeTest(testName) {
+  return QUALITATIVE_TESTS.includes(testName);
+}
+
+function selectDepartment(deptName) {
+  document.getElementById('dept-selection-section').classList.add('hidden-workspace');
+  document.getElementById('dept-workspace-section').classList.remove('hidden-workspace');
+  document.getElementById('current-dept-title').innerText = deptName;
+  const testSelector = document.getElementById('testName');
+  testSelector.innerHTML = '';
+  (DEPARTMENT_TESTS[deptName] || []).forEach(t => testSelector.add(new Option(t.label, t.value)));
+  const hideUnitAnalyzer = deptName === 'Microbiology' || deptName === 'Parasitology';
+  document.getElementById('unitFieldsGroup').classList.toggle('hidden-workspace', hideUnitAnalyzer);
+  autoFillTestRanges();
+  loadQcFlags();
+}
+
+function backToDepartments() {
+  document.getElementById('dept-workspace-section').classList.add('hidden-workspace');
+  document.getElementById('dept-selection-section').classList.remove('hidden-workspace');
+}
+
+async function autoFillTestRanges() {
+  const chosenTest = document.getElementById('testName').value;
+  if (!chosenTest) return;
+  const unitInput = document.getElementById('unit');
+  const refRangeInput = document.getElementById('refRange');
+  const sampleInput = document.getElementById('sampleType');
+  const valueInput = document.getElementById('value');
+  const qualGroup = document.getElementById('qualitativeFieldGroup');
+  const qualFreeform = document.getElementById('qualitativeFreeform');
+  const numericGroup = document.getElementById('numericFieldsGroup');
+  const rangeGroup = document.getElementById('rangeFieldsGroup');
+
+  unitInput.value = '';
+  refRangeInput.value = '';
+  refRangeInput.placeholder = 'Loading...';
+  sampleInput.value = '';
+  valueInput.value = '';
+  qualFreeform.value = '';
+
+  const isQual = isQualitativeTest(chosenTest);
+
+  if (isQual) {
+    qualGroup.classList.remove('hidden-workspace');
+    numericGroup.classList.add('hidden-workspace');
+    rangeGroup.classList.add('hidden-workspace');
+    valueInput.required = false;
+    unitInput.required = false;
+    refRangeInput.required = false;
+    
+    try {
+      const data = await apiFetch(`/api/reference-ranges?test=${encodeURIComponent(chosenTest)}`);
+      sampleInput.value = data.sampleType || '';
+      unitInput.value = data.unit || '--';
+      refRangeInput.value = data.refRange || '--';
+      refRangeInput.placeholder = '--';
+    } catch (err) {
+      refRangeInput.placeholder = 'Enter manually';
+    }
+  } else {
+    qualGroup.classList.add('hidden-workspace');
+    numericGroup.classList.remove('hidden-workspace');
+    rangeGroup.classList.remove('hidden-workspace');
+    valueInput.required = true;
+    unitInput.required = true;
+    refRangeInput.required = true;
+    try {
+      const data = await apiFetch(`/api/reference-ranges?test=${encodeURIComponent(chosenTest)}`);
+      unitInput.value = data.unit || '';
+      refRangeInput.value = data.refRange || '';
+      refRangeInput.placeholder = '--';
+      sampleInput.value = data.sampleType || '';
+    } catch (err) {
+      refRangeInput.placeholder = 'Enter manually';
+    }
+  }
+  updateFormNotes();
+}
+
+async function loadQcFlags() {
+  const panel = document.getElementById('qcFlagsPanel');
+  panel.innerHTML = `<p class="text-xs text-slate-400 font-mono">Loading QC status...</p>`;
+  try {
+    const data = await apiFetch('/api/system/qc-status');
+    const qcKnown = data.dailyQcPassed !== null && data.dailyQcPassed !== undefined;
+    const qcPassed = data.dailyQcPassed === true;
+    const qcBox = qcKnown ? (qcPassed ? 'bg-medical-emeraldLight border-emerald-200' : 'bg-medical-roseLight border-rose-200') : 'bg-slate-50 border-slate-200';
+    const qcDot = qcKnown ? (qcPassed ? 'bg-medical-emerald animate-pulse-soft' : 'bg-medical-rose') : 'bg-slate-300';
+    const qcLabel = qcKnown ? (qcPassed ? 'text-emerald-800' : 'text-rose-800') : 'text-slate-600';
+    const qcBadge = qcKnown ? (qcPassed ? 'text-medical-emerald bg-emerald-100' : 'text-medical-rose bg-rose-100') : 'text-slate-500 bg-slate-200';
+    const qcBadgeText = qcKnown ? (qcPassed ? 'PASSED' : 'ATTENTION') : 'NOT REPORTED';
+    const syncKnown = data.syncSecure !== null && data.syncSecure !== undefined;
+    const syncBadgeText = syncKnown ? (data.syncSecure ? 'SECURE' : 'CHECK') : 'NOT REPORTED';
+    panel.innerHTML = `
+      <div class="flex items-center justify-between p-3 ${qcBox} rounded-lg border">
+        <div class="flex items-center space-x-2">
+          <span class="h-2 w-2 rounded-full ${qcDot}"></span>
+          <span class="text-xs font-semibold ${qcLabel}">Daily QC Run</span>
+        </div>
+        <span class="text-[10px] font-mono font-bold ${qcBadge} px-2 py-0.5 rounded-full">${qcBadgeText}</span>
+      </div>
+      <div class="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-100">
+        <div class="flex items-center space-x-2">
+          <svg class="w-4 h-4 text-medical-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+          <span class="text-xs font-semibold text-blue-800">Ward Sync</span>
+        </div>
+        <span class="text-[10px] font-mono text-blue-700 font-bold">${syncBadgeText}</span>
+      </div>
+      <p class="text-xs text-slate-400 leading-relaxed pt-1" id="qcNote">Results are analyzed against reference ranges and drafted for scientist review.</p>`;
+    updateFormNotes();
+  } catch (err) {
+    panel.innerHTML = `<p class="text-xs text-medical-rose font-mono">Could not load QC status: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function updateFormNotes() {
+  const noteEl = document.getElementById('qcNote');
+  const submitNoteEl = document.getElementById('submitNote');
+  const isQual = isQualitativeTest(document.getElementById('testName').value);
+  const text = isQual
+    ? 'Results are interpreted descriptively. Drafted for scientist review.'
+    : 'Results are analyzed against reference ranges and drafted for scientist review before approval.';
+  if (noteEl) noteEl.innerText = text;
+  if (submitNoteEl) submitNoteEl.innerText = text;
+}
+
+// Status Helpers
+function computeStatus(value, refRange) {
+  const numVal = parseFloat(value);
+  const rangeParts = (refRange || '').split('-').map(x => parseFloat(x.trim()));
+  if (rangeParts.length === 2 && !isNaN(rangeParts[0]) && !isNaN(rangeParts[1]) && !isNaN(numVal)) {
+    if (numVal < rangeParts[0]) return 'below';
+    if (numVal > rangeParts[1]) return 'above';
+    return 'normal';
+  }
+  const v = (value || '').trim().toLowerCase();
+  if (v === 'negative' || v === 'non-reactive' || v === 'no growth' || v === 'no organism seen' || v === 'no parasites seen' || v === 'no ova/parasites seen' || v === 'all negative' || v === 'no fungal elements' || v === 'no abnormal findings' || v === 'sensitive to all tested' || v === 'aa') return 'clear';
+  if (v === 'positive' || v === 'reactive' || v === 'isolated' || v === 'seen' || v === 'present' || v === 'resistant') return 'flagged';
+  return 'flagged';
+}
+
+function statusLabel(status) {
+  switch (status) {
+    case 'below': return { text: 'Below Reference Range', cls: 'text-medical-amber font-bold' };
+    case 'above': return { text: 'Above Reference Range', cls: 'text-medical-rose font-bold' };
+    case 'flagged': return { text: 'Positive / Abnormal', cls: 'text-medical-rose font-bold' };
+    case 'clear': return { text: 'Negative / Normal', cls: 'text-medical-emerald font-bold' };
+    default: return { text: 'Within Range', cls: 'text-medical-emerald font-bold' };
+  }
+}
+
+function severityBadge(severity) {
+  if (!severity || severity === 'NORMAL') return { text: 'NORMAL', cls: 'bg-emerald-50 text-medical-emerald border-emerald-200' };
+  if (severity.startsWith('MILD')) return { text: severity.replace('_', ' '), cls: 'bg-amber-50 text-medical-amber border-amber-200' };
+  if (severity.startsWith('MODERATE')) return { text: severity.replace('_', ' '), cls: 'bg-orange-50 text-orange-600 border-orange-200' };
+  if (severity.startsWith('CRITICAL')) return { text: severity.replace('_', ' '), cls: 'bg-rose-50 text-medical-rose border-rose-200' };
+  if (severity === 'BLOCKED') return { text: 'BLOCKED', cls: 'bg-slate-100 text-slate-600 border-slate-200' };
+  return { text: severity, cls: 'bg-blue-50 text-medical-blue border-blue-200' };
+}
+
+// Submit
+const form = document.getElementById('labForm');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const deptSection = document.getElementById('dept-workspace-section');
+  const loadingSec = document.getElementById('loadingState');
+  const errorSec = document.getElementById('errorState');
+  const scientistSec = document.getElementById('scientist-workspace-section');
+  deptSection.classList.add('hidden-workspace');
+  errorSec.classList.add('hidden-workspace');
+  loadingSec.classList.remove('hidden-workspace');
+
+  // Auto-sync qualitative value before submit
+  const isQual = isQualitativeTest(document.getElementById('testName').value);
+  const qualValue = document.getElementById('qualitativeFreeform').value || '';
+  if (isQual) { document.getElementById('value').value = qualValue; }
+
+  const payload = {
+    patientId: document.getElementById('patientId').value,
+    patientName: document.getElementById('patientName').value,
+    patientAge: document.getElementById('patientAge').value,
+    patientSex: document.getElementById('patientSex').value,
+    clinician: document.getElementById('clinician').value,
+    testName: document.getElementById('testName').value,
+    value: document.getElementById('value').value,
+    unit: document.getElementById('unit').value,
+    refRange: document.getElementById('refRange').value,
+    analyzer: document.getElementById('analyzer').value,
+    sampleType: document.getElementById('sampleType').value,
+    language: document.getElementById('language').value,
+    scientistId: session.user.id,
+    rawFinding: document.getElementById('qualitativeFreeform').value || ''
+  };
+
+  const stepsContainer = document.getElementById('aiPipelineSteps');
+  const stages = ['Validating patient record...', 'Checking reference range...', 'Generating analysis...', 'Translating patient summary...'];
+  let stageIndex = 0;
+  renderPipelineStep(stepsContainer, stages[0], 0, stages.length);
+  const stageTimer = setInterval(() => {
+    stageIndex = Math.min(stageIndex + 1, stages.length - 1);
+    renderPipelineStep(stepsContainer, stages[stageIndex], stageIndex, stages.length);
+  }, 900);
+
+  try {
+    const data = await apiFetch('/api/process', { method: 'POST', body: JSON.stringify(payload) });
+    clearInterval(stageTimer);
+    lastApiResponse = data;
+    activeTranslation = data.patientSummary || '';
+    activeAnalysis = data.observation || '';
+    populateScientistWorkspace(payload, data);
+    loadingSec.classList.add('hidden-workspace');
+    scientistSec.classList.remove('hidden-workspace');
+    scientistSec.scrollTop = 0;
+  } catch (err) {
+    clearInterval(stageTimer);
+    loadingSec.classList.add('hidden-workspace');
+    document.getElementById('errorMessage').innerText = err.message || 'The analytical service is temporarily unavailable. Please try again.';
+    errorSec.classList.remove('hidden-workspace');
+    deptSection.classList.remove('hidden-workspace');
+  }
+});
+
+function renderPipelineStep(container, label, idx, total) {
+  container.innerHTML = `
+    <div class="flex items-center justify-between text-xs font-mono">
+      <span class="text-slate-600 flex items-center">
+        <span class="inline-block h-3 w-3 mr-2 rounded-full border-2 border-medical-blue border-t-transparent animate-spin"></span>
+        ${escapeHtml(label)}
+      </span>
+      <span class="text-slate-400">${idx + 1}/${total}</span>
+    </div>`;
+}
+
+function populateScientistWorkspace(payload, data) {
+  const isQual = isQualitativeTest(payload.testName);
+  document.getElementById('reviewTestTitle').innerText = payload.testName;
+  document.getElementById('reviewMeasuredValueBlock').classList.toggle('hidden-workspace', isQual);
+  document.getElementById('reviewMetaGrid').classList.toggle('hidden-workspace', isQual);
+  document.getElementById('referenceComparisonBlock').classList.toggle('hidden-workspace', isQual);
+  document.getElementById('reviewTestValue').innerText = `${payload.value} ${payload.unit || ''}`;
+  document.getElementById('reviewTestRef').innerText = `${payload.refRange} ${payload.unit || ''}`;
+  const status = computeStatus(payload.value, payload.refRange);
+  const label = statusLabel(status);
+  const statusEl = document.getElementById('reviewTestStatus');
+  statusEl.innerText = label.text;
+  statusEl.className = label.cls;
+  const sevBadge = severityBadge(data.severity);
+  const sevEl = document.getElementById('reviewSeverityBadge');
+  if (sevEl) {
+    sevEl.innerText = sevBadge.text;
+    sevEl.className = `badge ${sevBadge.cls}`;
+  }
+  document.getElementById('reviewQcStatus').innerText = data.qcVerified === false ? 'Review Required' : 'Verified';
+  document.getElementById('reviewAnalyzerTelemetry').innerText = payload.analyzer ? `${payload.analyzer} - Auto-verified` : 'Not reported';
+  document.getElementById('guardrailStatus').innerText = 'Active';
+  document.getElementById('secRefComparison').innerText = data.referenceComparison || '--';
+  document.getElementById('secSignificance').innerText = data.significance || '--';
+  document.getElementById('scientistAiDraft').innerText = data.patientSummary || '--';
+  const rawFindingEl = document.getElementById('reviewRawFinding');
+  const rawFindingContainer = document.getElementById('rawFindingContainer');
+  if (rawFindingEl && rawFindingContainer) {
+    if (data.rawFinding) {
+      rawFindingEl.innerText = data.rawFinding;
+      rawFindingContainer.classList.remove('hidden-workspace');
+    } else {
+      rawFindingContainer.classList.add('hidden-workspace');
+    }
+  }
+  document.getElementById('generatedHash').innerText = data.draftHash || 'Not generated';
+  const confidence = typeof data.confidence === 'number' ? Math.round(data.confidence * 100) : null;
+  document.getElementById('confidenceValue').innerText = confidence !== null ? `${confidence}%` : '--';
+  document.getElementById('confidenceBar').style.width = confidence !== null ? `${confidence}%` : '0%';
+  const reasons = data.confidenceReasons || [];
+  document.getElementById('confidenceReasons').innerHTML = reasons.length
+    ? reasons.map(r => `<li class="py-0.5">${escapeHtml(r)}</li>`).join('')
+    : '<li>No reasoning breakdown returned.</li>';
+}
+
+function toggleReasoning() {
+  const list = document.getElementById('confidenceReasons');
+  const arrow = document.getElementById('reasoningArrow');
+  if (!list || !arrow) return;
+  list.classList.toggle('hidden-workspace');
+  arrow.style.transform = list.classList.contains('hidden-workspace') ? 'rotate(0deg)' : 'rotate(180deg)';
+}
+
+function backToInputForm() {
+  document.getElementById('scientist-workspace-section').classList.add('hidden-workspace');
+  document.getElementById('dept-workspace-section').classList.remove('hidden-workspace');
+}
+
+// Sign-off
+async function approveRecord() {
+  const overlay = document.getElementById('signOffOverlay');
+  const stepsEl = document.getElementById('signOffSteps');
+  overlay.classList.remove('hidden-workspace');
+  const stages = ['Locking analytical values...', 'Applying scientist signature...', 'Generating cryptographic hash...', 'Writing to audit trail...'];
+  stepsEl.innerHTML = stages.map((s, i) => `
+    <div class="flex items-center text-xs font-mono text-slate-500" id="signoff-step-${i}">
+      <span class="inline-block h-3 w-3 mr-2 rounded-full border-2 border-slate-300"></span>${escapeHtml(s)}
+    </div>`).join('');
+  try {
+    for (let i = 0; i < stages.length; i++) {
+      document.getElementById(`signoff-step-${i}`).innerHTML = `
+        <span class="inline-block h-3 w-3 mr-2 rounded-full border-2 border-medical-blue border-t-transparent animate-spin"></span>${escapeHtml(stages[i])}`;
+      await new Promise(r => setTimeout(r, 350));
+    }
+    const payload = {
+      patientId: document.getElementById('patientId').value,
+      patientName: document.getElementById('patientName').value,
+      patientAge: document.getElementById('patientAge').value,
+      patientSex: document.getElementById('patientSex').value,
+      clinician: document.getElementById('clinician').value,
+      testName: document.getElementById('testName').value,
+      value: document.getElementById('value').value,
+      unit: document.getElementById('unit').value,
+      refRange: document.getElementById('refRange').value,
+      analyzer: document.getElementById('analyzer').value,
+      sampleType: document.getElementById('sampleType').value,
+      language: document.getElementById('language').value,
+      patientSummary: activeTranslation,
+      scientistDraft: activeAnalysis,
+      scientistId: session.user.id
+    };
+    const data = await apiFetch('/api/records', { method: 'POST', body: JSON.stringify(payload) });
+    stages.forEach((_, i) => {
+      document.getElementById(`signoff-step-${i}`).innerHTML = `<span class="inline-block h-3 w-3 mr-2 rounded-full bg-medical-emerald"></span>${escapeHtml(stages[i])}`;
+    });
+    await new Promise(r => setTimeout(r, 250));
+    overlay.classList.add('hidden-workspace');
+    document.getElementById('scientist-workspace-section').classList.add('hidden-workspace');
+    renderApprovedReport(data.record);
+    const reportScreen = document.getElementById('patient-report-section');
+    reportScreen.classList.remove('hidden-workspace');
+    reportScreen.scrollTop = 0;
+  } catch (err) {
+    overlay.classList.add('hidden-workspace');
+    document.getElementById('scientist-workspace-section').classList.add('hidden-workspace');
+    document.getElementById('errorMessage').innerText = err.message || 'Sign-off failed. The record was not saved.';
+    document.getElementById('errorState').classList.remove('hidden-workspace');
+  }
+}
+
+function renderApprovedReport(record) {
+  if (!record) return;
+  const isQual = isQualitativeTest(record.testName);
+  document.getElementById('reportFacilityName').innerText = record.facilityName || 'Medical Laboratory Report';
+  document.getElementById('reportDateDisplay').innerText = `DATE: ${record.createdAt ? new Date(record.createdAt).toLocaleString() : '--'}`;
+  document.getElementById('reportPatientId').innerText = record.patientId ?? '--';
+  document.getElementById('reportPatientName').innerText = record.patientName ?? '--';
+  document.getElementById('reportPatientBio').innerText = `${record.patientAge ?? '--'} / ${record.patientSex ?? '--'}`;
+  document.getElementById('reportClinician').innerText = record.clinician ?? '--';
+  document.getElementById('reportMlsSig').innerText = record.scientistId ?? '--';
+  document.getElementById('reportTimestamp').innerText = record.createdAt ? new Date(record.createdAt).toLocaleString() : '--';
+  document.getElementById('reportHashShort').innerText = shortHash(record.hash);
+  document.getElementById('reportAiVersion').innerText = record.aiVersion || '--';
+  // Hide analyzer for qualitative tests (microscope/culture, not machine)
+  document.getElementById('reportAnalyzer').innerText = isQual ? '—' : (record.analyzer || '—');
+  document.getElementById('reportTestName').innerText = record.testName ?? '--';
+  document.getElementById('reportValue').innerText = record.value ?? '--';
+  // For qualitative: hide refRange and unit columns entirely
+  const refRangeCols = document.querySelectorAll('.ref-range-col');
+  const unitCols = document.querySelectorAll('.unit-col');
+  refRangeCols.forEach(el => el.style.display = isQual ? 'none' : '');
+  unitCols.forEach(el => el.style.display = isQual ? 'none' : '');
+  // Set values (only visible for numeric)
+  document.getElementById('reportRefRange').innerText = record.refRange ?? '—';
+  document.getElementById('reportUnit').innerText = record.unit ?? '—';
+  document.getElementById('reportPatientSummary').innerText = record.patientSummary || '--';
+  document.getElementById('selectedLangBadge').innerText = (record.language || '').toUpperCase() || '--';
+  document.getElementById('reportSecHash').innerText = `Hash: ${record.hash || '--'}`;
+  document.getElementById('reportVerifierName').innerText = record.scientistId || 'Medical Lab Scientist';
+}
+
+function closeReport() {
+  document.getElementById('patient-report-section').classList.add('hidden-workspace');
+  if (session.user && session.user.role === 'clinician') {
+    switchTab('clinician-tab');
+  } else {
+    form.reset();
+    document.getElementById('dept-selection-section').classList.remove('hidden-workspace');
+  }
+}
+
+async function viewReportFromArchive(patientId) {
+  try {
+    const data = await apiFetch(`/api/records/${encodeURIComponent(patientId)}`);
+    document.querySelectorAll('.tab-pane').forEach(t => t.classList.add('hidden-workspace'));
+    document.getElementById('input-test-tab').classList.remove('hidden-workspace');
+    document.getElementById('dept-selection-section').classList.add('hidden-workspace');
+    document.getElementById('dept-workspace-section').classList.add('hidden-workspace');
+    renderApprovedReport(data.record);
+    const reportScreen = document.getElementById('patient-report-section');
+    reportScreen.classList.remove('hidden-workspace');
+    reportScreen.scrollTop = 0;
+  } catch (err) {
+    document.getElementById('errorMessage').innerText = `Could not load record: ${err.message}`;
+    document.getElementById('errorState').classList.remove('hidden-workspace');
+  }
+}
+
+// Clinician Archive
+async function loadClinicianArchive() {
+  const tbody = document.getElementById('clinician-table-body');
+  tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-xs text-slate-400 font-mono">Loading records...</td></tr>`;
+  try {
+    const data = await apiFetch('/api/records?status=approved');
+    clinicianRecords = data.records || [];
+    renderClinicianRows(clinicianRecords);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-xs text-medical-rose font-mono">Could not load records: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function renderClinicianRows(records) {
+  const tbody = document.getElementById('clinician-table-body');
+  if (!records.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-xs text-slate-400 font-mono">No approved records found.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = records.map(r => `
+      <tr class="table-row">
+        <td class="p-4 pl-6 font-medium text-slate-800">${escapeHtml(r.patientName)}</td>
+        <td class="p-4 text-slate-500 font-mono">${escapeHtml(r.patientId)}</td>
+        <td class="p-4">${escapeHtml(r.testName)} (${escapeHtml(r.value)} ${escapeHtml(r.unit)})</td>
+        <td class="p-4 text-center"><span class="badge bg-medical-emeraldLight text-medical-emerald border-emerald-200">APPROVED</span></td>
+        <td class="p-4 text-right pr-6"><button onclick="viewReportFromArchive('${escapeHtml(r.patientId)}')" class="text-medical-blue hover:text-blue-800 text-xs font-semibold">View Report</button></td>
+      </tr>`).join('');
+}
+
+function filterClinicianTable() {
+  const q = (document.getElementById('clinicianSearchInput').value || '').trim().toLowerCase();
+  if (!q) {
+    renderClinicianRows(clinicianRecords);
+    return;
+  }
+  renderClinicianRows(clinicianRecords.filter(r => (r.patientId || '').toLowerCase().includes(q)));
+}
+
+// Surveillance
+async function loadSurveillance() {
+  const grid = document.getElementById('wardStatsGrid');
+  grid.innerHTML = `<p class="text-xs text-slate-400 font-mono md:col-span-3">Loading ward data...</p>`;
+  try {
+    const data = await apiFetch('/api/surveillance/wards');
+    surveillanceWards = data.wards || [];
+    if (!surveillanceWards.length) {
+      grid.innerHTML = `<p class="text-xs text-slate-400 font-mono md:col-span-3">No surveillance data reported yet.</p>`;
+      return;
+    }
+    grid.innerHTML = surveillanceWards.map(w => {
+      const sev = w.severity === 'high'
+        ? { text: `High Density (${w.percentage}%)`, cls: 'text-medical-rose bg-medical-roseLight border-rose-200' }
+        : w.severity === 'moderate'
+        ? { text: `Moderate (${w.percentage}%)`, cls: 'text-medical-amber bg-amber-50 border-amber-200' }
+        : { text: `Stable (${w.percentage}%)`, cls: 'text-medical-emerald bg-medical-emeraldLight border-emerald-200' };
+      return `
+        <button onclick="jumpToWard('${escapeHtml(w.name)}')" class="bg-white border border-slate-200 rounded-xl p-5 text-left card-hover">
+          <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wide block">${escapeHtml(w.name)} Ward</span>
+          <div class="text-lg font-bold mt-1 text-slate-800">${escapeHtml(w.condition)}</div>
+          <div class="flex items-center justify-between mt-3">
+            <span class="text-[10px] font-mono font-bold ${sev.cls} px-2 py-0.5 rounded-full border">${sev.text}</span>
+            <span class="text-[11px] text-slate-400">${escapeHtml(w.caseCount)} cases</span>
+          </div>
+        </button>`;
+    }).join('');
+  } catch (err) {
+    grid.innerHTML = `<p class="text-xs text-medical-rose font-mono md:col-span-3">Could not load surveillance data: ${escapeHtml(err.message)}</p>`;
+  }
+  try {
+    const settings = await apiFetch('/api/surveillance/settings');
+    document.getElementById('epidemicLimit').innerText = settings.epidemicLimit || '--';
+    document.getElementById('anonymizationStatus').innerText = settings.anonymizationFilter || '--';
+    document.getElementById('wardCoverage').innerText = settings.wardCoverage != null ? `${settings.wardCoverage} Wards` : '--';
+  } catch (err) {}
+}
+
+async function jumpToWard(wardName) {
+  const content = document.getElementById('surveillanceContent');
+  document.getElementById('surveillanceBreadcrumb').innerText = `WARD: ${wardName.toUpperCase()}`;
+  content.innerHTML = `<p class="text-xs text-slate-400 font-mono sm:col-span-3">Loading ${escapeHtml(wardName)}...</p>`;
+  try {
+    const data = await apiFetch(`/api/surveillance/wards/${encodeURIComponent(wardName)}`);
+    const conditions = data.conditions || [];
+    if (!conditions.length) {
+      content.innerHTML = `<p class="text-xs text-slate-400 font-mono sm:col-span-3">No condition data for ${escapeHtml(wardName)}.</p>`;
+      return;
+    }
+    content.innerHTML = conditions.map(c => `
+      <div class="p-3 bg-slate-50 border border-slate-100 rounded-lg">
+        <span class="text-[10px] font-mono text-slate-400 uppercase block">${escapeHtml(c.name)}</span>
+        <span class="text-lg font-bold text-slate-800">${escapeHtml(c.caseCount)}</span>
+        <span class="text-[10px] text-slate-400 block">cases this week</span>
+      </div>`).join('');
+  } catch (err) {
+    content.innerHTML = `<p class="text-xs text-medical-rose font-mono sm:col-span-3">Could not load detail: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+// Admin
+async function loadAdminConsole() {
+  await Promise.all([loadAdminToggles(), loadApiTrace()]);
+}
+
+async function loadAdminToggles() {
+  try {
+    const data = await apiFetch('/api/admin/settings');
+    const lockEl = document.getElementById('strictDiagnosisLockStatus');
+    lockEl.innerText = data.strictDiagnosisLock ? 'ACTIVE' : 'DISABLED';
+    lockEl.className = `text-xs font-mono font-bold ${data.strictDiagnosisLock ? 'text-medical-emerald' : 'text-slate-400'}`;
+    const fallbackEl = document.getElementById('openaiFallbackStatus');
+    fallbackEl.innerText = data.openaiFallback ? 'ACTIVE' : 'DISABLED';
+    fallbackEl.className = `text-xs font-mono font-bold ${data.openaiFallback ? 'text-medical-emerald' : 'text-slate-400'}`;
+  } catch (err) {}
+}
+
+async function loadApiTrace() {
+  const el = document.getElementById('apiTraceLog');
+  el.innerHTML = `<p class="text-[10px] text-slate-500">Loading trace...</p>`;
+  try {
+    const data = await apiFetch('/api/admin/logs?limit=20');
+    const logs = data.logs || [];
+    if (!logs.length) {
+      el.innerHTML = `<p class="text-[10px] text-slate-500">No recent traffic.</p>`;
+      return;
+    }
+    el.innerHTML = logs.map(l => `<p class="text-[10px] ${logColor(l.level)}">[${escapeHtml(l.timestamp)}] ${escapeHtml(l.message)}</p>`).join('');
+  } catch (err) {
+    el.innerHTML = `<p class="text-[10px] text-medical-rose">Could not load trace: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function logColor(level) {
+  if (level === 'error') return 'text-medical-rose';
+  if (level === 'info') return 'text-medical-blue';
+  return 'text-slate-400';
+}
+
+// Boot
+checkExistingSession();
+</script>
+</body>
+</html>
