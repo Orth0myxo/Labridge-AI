@@ -10,7 +10,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
-import { LabBridgeEngine } from './ai-core.js';
+import { LabBridgeEngine, isSensitiveTestName } from './ai-core.js';
 
 // 1. ENVIRONMENT VALIDATION
 
@@ -69,6 +69,29 @@ const engine = new LabBridgeEngine(
   process.env.OPENAI_API_KEY || null
 );
 
+const SIGNED_RECORD_PROVIDER = 'LabBridge Engine';
+const SENSITIVE_TEST_LABEL = 'Confidential test';
+const SENSITIVE_VALUE_LABEL = 'Result withheld';
+const LANGUAGE_VALUES = [
+  'SIMPLIFIED PLAIN ENGLISH',
+  'NIGERIAN/GHANAIAN PIDGIN',
+  'YORUBA',
+  'HAUSA',
+  'IGBO'
+];
+
+function maskRecordFields(testName, value, refRange) {
+  if (!isSensitiveTestName(testName)) {
+    return { testName, value, refRange, sensitive: false };
+  }
+  return {
+    testName: SENSITIVE_TEST_LABEL,
+    value: SENSITIVE_VALUE_LABEL,
+    refRange: '—',
+    sensitive: true
+  };
+}
+
 // 5. RATE LIMITING
 
 const processLimiter = rateLimit({
@@ -101,13 +124,7 @@ const ProcessRequestSchema = z.object({
   refRange: z.string().max(100).trim().optional(),
   analyzer: z.string().max(100).optional(),
   sampleType: z.string().max(100).optional(),
-  language: z.enum([
-    'SIMPLIFIED PLAIN ENGLISH',
-    'NIGERIAN/GHANAIAN PIDGIN',
-    'YORUBA',
-    'HAUSA',
-    'IGBO'
-  ]),
+  language: z.enum(LANGUAGE_VALUES),
   scientistId: z.string().max(50).optional(),
   rawFinding: z.string().max(3000).optional(),
   department: z.string().max(50).optional()
@@ -124,6 +141,22 @@ const ProcessRequestSchema = z.object({
 const LoginSchema = z.object({
   identifier: z.string().min(1).max(50).trim(),
   password: z.string().min(1).max(100)
+});
+
+const RecordSchema = z.object({
+  patientId: z.string().max(50).optional(),
+  patientName: z.string().min(1).max(100).trim(),
+  patientAge: z.string().max(20).optional(),
+  patientSex: z.string().max(20).optional(),
+  clinician: z.string().max(100).optional(),
+  testName: z.string().min(1).max(100).trim(),
+  value: z.string().min(1).max(3000).trim(),
+  unit: z.string().max(50).optional(),
+  refRange: z.string().max(100).trim().optional(),
+  analyzer: z.string().max(100).optional(),
+  sampleType: z.string().max(100).optional(),
+  language: z.enum(LANGUAGE_VALUES).optional(),
+  department: z.string().max(50).optional()
 });
 
 // FIX B6: Human-friendly Zod error mapper
@@ -190,6 +223,23 @@ function verifyToken(token) {
 
 // 8. AUTH MIDDLEWARE
 
+function normalizeRole(role) {
+  return typeof role === 'string' ? role.trim().toLowerCase() : '';
+}
+
+function authorize(...allowedRoles) {
+  const allowed = new Set(allowedRoles.flat().map(normalizeRole));
+  return (req, res, next) => {
+    if (!allowed.has(normalizeRole(req.userRole))) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have permission to perform this action.'
+      });
+    }
+    next();
+  };
+}
+
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -201,7 +251,7 @@ function authenticate(req, res, next) {
   try {
     const decoded = verifyToken(token);
     req.userId = decoded.sub;
-    req.userRole = decoded.role;
+    req.userRole = normalizeRole(decoded.role);
     req.userName = decoded.name;
     next();
   } catch (err) {
@@ -308,31 +358,38 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
   try {
     const { count: patientsProcessed } = await supabase
       .from('patient_records')
-      .select('*', { count: 'exact', head: true });
+      .select('*', { count: 'exact', head: true })
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER);
 
     const { count: pendingReview } = await supabase
       .from('patient_records')
       .select('*', { count: 'exact', head: true })
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
       .eq('was_blocked', true);
 
     const today = new Date().toISOString().split('T')[0];
     const { count: outbreakFlags } = await supabase
       .from('patient_records')
       .select('*', { count: 'exact', head: true })
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
       .eq('is_urgent', true)
       .gte('created_at', today);
 
     const { data: recentRecords } = await supabase
       .from('patient_records')
       .select('patient_name, test_name, test_value, unit, signed_by, created_at')
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
       .order('created_at', { ascending: false })
       .limit(5);
 
-    const recentActivity = (recentRecords || []).map(r => ({
-      summary: `${r.patient_name} — ${r.test_name}`,
-      value: `${r.test_value} ${r.unit || ''}`.trim(),
-      hash: crypto.createHash('sha256').update(`${r.patient_name}|${r.created_at}`).digest('hex').slice(0, 16)
-    }));
+    const recentActivity = req.userRole === 'surveillance' ? [] : (recentRecords || []).map(r => {
+      const masked = maskRecordFields(r.test_name, r.test_value, null);
+      return {
+        summary: `${r.patient_name} — ${masked.testName}`,
+        value: `${masked.value} ${masked.sensitive ? '' : (r.unit || '')}`.trim(),
+        hash: crypto.createHash('sha256').update(`${r.patient_name}|${r.created_at}`).digest('hex').slice(0, 16)
+      };
+    });
 
     res.json({
       success: true,
@@ -348,7 +405,7 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/system/health', authenticate, async (req, res) => {
+app.get('/api/system/health', authenticate, authorize('admin'), async (req, res) => {
   let dbStatus = 'online';
   try {
     const { error } = await supabase
@@ -371,7 +428,7 @@ app.get('/api/system/health', authenticate, async (req, res) => {
   res.json({ success: true, services });
 });
 
-app.get('/api/system/qc-status', authenticate, async (req, res) => {
+app.get('/api/system/qc-status', authenticate, authorize('mls', 'admin'), async (req, res) => {
   res.json({
     success: true,
     dailyQcPassed: null,
@@ -437,7 +494,7 @@ const DEFAULT_REFERENCE_RANGES = {
   'Diagnostic Scan': { unit: '—', refRange: 'Negative / Positive', sampleType: 'Culture/Swab' }
 };
 
-app.get('/api/reference-ranges', authenticate, async (req, res) => {
+app.get('/api/reference-ranges', authenticate, authorize('mls', 'admin'), async (req, res) => {
   const testName = req.query.test;
   if (!testName) {
     return res.status(400).json({ success: false, error: 'Test name required.' });
@@ -452,11 +509,12 @@ app.get('/api/reference-ranges', authenticate, async (req, res) => {
 // 11. RECORDS ROUTES
 
 // FIX A4: Use r.unit from database instead of hardcoded '%'
-app.get('/api/records', authenticate, async (req, res) => {
+app.get('/api/records', authenticate, authorize('clinician', 'admin'), async (req, res) => {
   try {
     const { data: records, error } = await supabase
       .from('patient_records')
       .select('*')
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -464,17 +522,20 @@ app.get('/api/records', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      records: (records || []).map(r => ({
-        patientId: r.patient_name?.replace(/\s+/g, '-').toUpperCase() || 'UNKNOWN',
-        patientName: r.patient_name,
-        testName: r.test_name,
-        value: r.test_value,
-        unit: r.unit || '—',
-        refRange: r.ref_range,
-        clinician: r.signed_by,
-        createdAt: r.created_at,
-        hash: r.signature?.slice(0, 16) || '—'
-      }))
+      records: (records || []).map(r => {
+        const masked = maskRecordFields(r.test_name, r.test_value, r.ref_range);
+        return {
+          patientId: r.patient_name?.replace(/\s+/g, '-').toUpperCase() || 'UNKNOWN',
+          patientName: r.patient_name,
+          testName: masked.testName,
+          value: masked.value,
+          unit: masked.sensitive ? '—' : (r.unit || '—'),
+          refRange: masked.refRange,
+          clinician: r.signed_by,
+          createdAt: r.created_at,
+          hash: r.signature?.slice(0, 16) || '—'
+        };
+      })
     });
 
   } catch (err) {
@@ -484,7 +545,7 @@ app.get('/api/records', authenticate, async (req, res) => {
 });
 
 // FIX A4: Use r.unit from database
-app.get('/api/records/:patientId', authenticate, async (req, res) => {
+app.get('/api/records/:patientId', authenticate, authorize('clinician', 'admin'), async (req, res) => {
   const { patientId } = req.params;
 
   try {
@@ -494,6 +555,7 @@ app.get('/api/records/:patientId', authenticate, async (req, res) => {
       .from('patient_records')
       .select('*')
       .ilike('patient_name', `%${searchName}%`)
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
       .order('created_at', { ascending: false })
       .limit(1)
       .single();
@@ -501,6 +563,8 @@ app.get('/api/records/:patientId', authenticate, async (req, res) => {
     if (error || !record) {
       return res.status(404).json({ success: false, error: 'Record not found.' });
     }
+
+    const masked = maskRecordFields(record.test_name, record.test_value, record.ref_range);
 
     res.json({
       success: true,
@@ -510,10 +574,10 @@ app.get('/api/records/:patientId', authenticate, async (req, res) => {
         patientAge: record.patient_age || '—',
         patientSex: record.patient_sex || '—',
         clinician: record.signed_by,
-        testName: record.test_name,
-        value: record.test_value,
-        unit: record.unit || '—',
-        refRange: record.ref_range,
+        testName: masked.testName,
+        value: masked.value,
+        unit: masked.sensitive ? '—' : (record.unit || '—'),
+        refRange: masked.refRange,
         analyzer: record.analyzer || '—',
         language: record.language || 'SIMPLIFIED PLAIN ENGLISH',
         patientSummary: record.translation,
@@ -534,25 +598,25 @@ app.get('/api/records/:patientId', authenticate, async (req, res) => {
 
 // 12. SURVEILLANCE ROUTES
 
-app.get('/api/surveillance/wards', authenticate, async (req, res) => {
+app.get('/api/surveillance/wards', authenticate, authorize('surveillance', 'admin'), async (req, res) => {
   res.json({ success: true, wards: [] });
 });
 
-app.get('/api/surveillance/wards/:name', authenticate, async (req, res) => {
+app.get('/api/surveillance/wards/:name', authenticate, authorize('surveillance', 'admin'), async (req, res) => {
   res.json({ success: true, conditions: [] });
 });
 
-app.get('/api/surveillance/settings', authenticate, (req, res) => {
+app.get('/api/surveillance/settings', authenticate, authorize('surveillance', 'admin'), (req, res) => {
   res.json({ success: true, epidemicLimit: null, anonymizationFilter: null, wardCoverage: null });
 });
 
 // 13. ADMIN ROUTES
 
-app.get('/api/admin/settings', authenticate, (req, res) => {
+app.get('/api/admin/settings', authenticate, authorize('admin'), (req, res) => {
   res.json({ success: true, strictDiagnosisLock: true, openaiFallback: !!process.env.OPENAI_API_KEY });
 });
 
-app.get('/api/admin/logs', authenticate, async (req, res) => {
+app.get('/api/admin/logs', authenticate, authorize('admin'), async (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   try {
     const { data: logs, error } = await supabase
@@ -579,43 +643,102 @@ app.get('/api/admin/logs', authenticate, async (req, res) => {
 
 // 14. POST /api/records (Sign-off & Save)
 
-app.post('/api/records', authenticate, async (req, res) => {
+app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, res) => {
+  const parseResult = RecordSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({
+      success: false,
+      error: formatZodErrors(parseResult.error)
+    });
+  }
+
   const {
     patientId, patientName, patientAge, patientSex, clinician,
-    testName, value, unit, refRange, analyzer, sampleType, language,
-    patientSummary, scientistDraft, scientistId, department
-  } = req.body;
+    testName, value, unit, refRange, analyzer, sampleType, language, department
+  } = parseResult.data;
 
+  const signedBy = req.userId;
   const timestamp = new Date().toISOString();
-  const payloadString = `${patientName}|${testName}|${value}|${timestamp}|${scientistId}`;
-  const signature = crypto
-    .createHmac('sha256', process.env.HMAC_SECRET_KEY)
-    .update(payloadString)
-    .digest('hex');
 
   try {
-    // FIX A5 + C2 + C3: Include unit, department, age, sex
+    const { data: draft, error: draftError } = await supabase
+      .from('patient_records')
+      .select('*')
+      .eq('patient_name', patientName)
+      .eq('test_name', testName)
+      .eq('test_value', value)
+      .eq('signed_by', signedBy)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (draftError) throw draftError;
+
+    if (!draft) {
+      return res.status(409).json({
+        success: false,
+        error: 'No matching unsigned draft found. Process the result again before signing off.'
+      });
+    }
+
+    if (draft.ai_provider === SIGNED_RECORD_PROVIDER) {
+      return res.status(409).json({
+        success: false,
+        error: 'This result has already been signed off.'
+      });
+    }
+
+    if (draft.was_blocked) {
+      return res.status(409).json({
+        success: false,
+        error: 'Blocked results cannot be signed off. Review the result and process it again.'
+      });
+    }
+
+    const signedSummary = typeof draft.translation === 'string' ? draft.translation.trim() : '';
+    if (!signedSummary) {
+      return res.status(409).json({
+        success: false,
+        error: 'The matching draft has no patient summary to sign.'
+      });
+    }
+
+    if (!engine.applyHardcodedGuardrails(signedSummary)) {
+      return res.status(409).json({
+        success: false,
+        error: 'The matching draft failed the safety guardrail and cannot be signed off.'
+      });
+    }
+
+    const signedRefRange = refRange || draft.ref_range || '';
+    const payloadString = `${patientName}|${testName}|${value}|${signedRefRange}|${signedSummary}|${timestamp}|${signedBy}`;
+    const signature = crypto
+      .createHmac('sha256', process.env.HMAC_SECRET_KEY)
+      .update(payloadString)
+      .digest('hex');
+
     const { data: record, error: dbError } = await supabase
       .from('patient_records')
       .insert([{
         patient_name: patientName,
         test_name: testName,
         test_value: value,
-        unit: unit || '—',
-        ref_range: refRange,
-        translation: patientSummary,
+        unit: unit || draft.unit || '—',
+        ref_range: signedRefRange,
+        translation: signedSummary,
         signature: signature,
-        signed_by: scientistId,
+        signed_by: signedBy,
         created_at: timestamp,
-        is_urgent: false,
-        ai_provider: 'LabBridge Engine',
+        is_urgent: draft.is_urgent === true,
+        ai_provider: SIGNED_RECORD_PROVIDER,
         was_blocked: false,
-        patient_age: patientAge,
-        patient_sex: patientSex,
-        department: department || 'General',
-        analyzer: analyzer,
-        sample_type: sampleType,
-        language: language
+        patient_age: patientAge || draft.patient_age,
+        patient_sex: patientSex || draft.patient_sex,
+        department: department || draft.department || 'General',
+        analyzer: analyzer || draft.analyzer,
+        sample_type: sampleType || draft.sample_type,
+        language: language || draft.language,
+        raw_finding: draft.raw_finding
       }])
       .select()
       .single();
@@ -628,36 +751,37 @@ app.post('/api/records', authenticate, async (req, res) => {
     await supabase
       .from('audit_logs')
       .insert([{
-        user_id: scientistId,
+        user_id: signedBy,
         action: 'SCIENTIST_SIGN_OFF',
         target_patient: patientName,
         timestamp: timestamp,
         details: { testName, value, signature: signature.slice(0, 16) }
       }]);
 
-    console.log(`✅ Record signed off by ${scientistId} for ${patientName}`);
+    console.log(`✅ Record signed off by ${signedBy} for ${patientName}`);
 
-    // FIX B8: Use FACILITY_NAME env var, remove software branding
+    const responseFields = maskRecordFields(testName, value, signedRefRange);
+
     res.json({
       success: true,
       record: {
         patientId: patientId || patientName?.replace(/\s+/g, '-').toUpperCase(),
         patientName,
-        patientAge: patientAge || '—',
-        patientSex: patientSex || '—',
+        patientAge: patientAge || draft.patient_age || '—',
+        patientSex: patientSex || draft.patient_sex || '—',
         clinician: clinician || '—',
-        testName,
-        value,
-        unit: unit || '—',
-        refRange,
-        analyzer: analyzer || '—',
-        language: language || 'SIMPLIFIED PLAIN ENGLISH',
-        patientSummary,
-        scientistDraft,
-        scientistId,
+        testName: responseFields.testName,
+        value: responseFields.value,
+        unit: responseFields.sensitive ? '—' : (unit || draft.unit || '—'),
+        refRange: responseFields.refRange,
+        analyzer: analyzer || draft.analyzer || '—',
+        language: language || draft.language || 'SIMPLIFIED PLAIN ENGLISH',
+        patientSummary: signedSummary,
+        scientistDraft: signedSummary,
+        scientistId: signedBy,
         createdAt: timestamp,
         hash: signature,
-        aiVersion: null,
+        aiVersion: draft.ai_provider || SIGNED_RECORD_PROVIDER,
         facilityName: process.env.FACILITY_NAME || 'Medical Laboratory'
       }
     });
@@ -670,7 +794,7 @@ app.post('/api/records', authenticate, async (req, res) => {
 
 // 15. MAIN AI PROCESSING ROUTE
 
-app.post('/api/process', authenticate, processLimiter, async (req, res) => {
+app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter, async (req, res) => {
   const parseResult = ProcessRequestSchema.safeParse(req.body);
   if (!parseResult.success) {
     return res.status(400).json({
@@ -784,13 +908,19 @@ app.get('/api/health', (req, res) => {
 
 // 17. START SERVER
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 LabBridge API running at: http://localhost:${PORT}`);
-  console.log(`🔒 Security: Helmet enabled, Rate limiting active, JWT required`);
-  console.log(`🔐 Auth: /api/auth/login, /api/auth/me, /api/auth/logout`);
-  console.log(`📊 Dashboard: /api/dashboard/stats, /api/system/health`);
-  console.log(`🧪 Reference: /api/reference-ranges`);
-  console.log(`📋 Records: /api/records`);
-  console.log(`🌍 Surveillance: /api/surveillance/wards`);
-  console.log(`⚙️ Admin: /api/admin/settings, /api/admin/logs`);
-});
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+
+if (isDirectRun) {
+  app.listen(PORT, () => {
+    console.log(`\n🚀 LabBridge API running at: http://localhost:${PORT}`);
+    console.log(`🔒 Security: Helmet enabled, Rate limiting active, JWT required`);
+    console.log(`🔐 Auth: /api/auth/login, /api/auth/me, /api/auth/logout`);
+    console.log(`📊 Dashboard: /api/dashboard/stats, /api/system/health`);
+    console.log(`🧪 Reference: /api/reference-ranges`);
+    console.log(`📋 Records: /api/records`);
+    console.log(`🌍 Surveillance: /api/surveillance/wards`);
+    console.log(`⚙️ Admin: /api/admin/settings, /api/admin/logs`);
+  });
+}
+
+export { app, signToken, normalizeRole, maskRecordFields, SIGNED_RECORD_PROVIDER };

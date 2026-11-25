@@ -3,6 +3,23 @@
 import { SystemInstructions } from './instructions.js';
 import https from 'https';
 
+const SENSITIVE_TESTS = [
+  'VDRL',
+  'HIV Rapid Test',
+  'Hepatitis B Surface Antigen',
+  'Hepatitis C Antibody',
+  'Pregnancy Test (hCG)'
+];
+
+export function normalizeTestName(testName) {
+  return String(testName || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function isSensitiveTestName(testName) {
+  const normalized = normalizeTestName(testName);
+  return SENSITIVE_TESTS.some(name => normalizeTestName(name) === normalized);
+}
+
 // --- LANGUAGE TRANSLATION MAP (Reliable fallback when AI fails) ---
 const TRANSLATION_MAP = {
   'SIMPLIFIED PLAIN ENGLISH': {
@@ -457,8 +474,7 @@ export class LabBridgeEngine {
 
   // --- SENSITIVE TESTS: Hide from patient report ---
   isSensitiveTest(testName) {
-    return ['VDRL', 'HIV Rapid Test', 'Hepatitis B Surface Antigen', 
-            'Hepatitis C Antibody', 'Pregnancy Test (hCG)'].includes(testName);
+    return isSensitiveTestName(testName);
   }
 
   // --- QUALITATIVE TEMPLATE MAPPING ---
@@ -728,6 +744,15 @@ export class LabBridgeEngine {
         patientTranslation = patientTranslation.replace(/^our/i, 'Your');
       }
 
+      if (!this.applyHardcodedGuardrails(patientTranslation)) {
+        console.warn('🛡️ Guardrail hit on qualitative patient translation');
+        return this.buildBlockedResult({
+          observation: `${safeTestName}: ${safeRawFinding || safeValue}.`,
+          referenceComparison: 'Result requires manual review.',
+          provider: usedProvider
+        });
+      }
+
       const confidenceData = this.calculateConfidence(safeValue, safeRefRange, safeTestName, severity);
 
       // AI reads the raw finding and returns a very short clinical significance for the scientist
@@ -925,20 +950,11 @@ export class LabBridgeEngine {
       console.log('   Patient Summary: [Output blocked by safety filter]');
       console.log('   Confidence: 0%');
       console.log('─────────────────────────────────────────────────────────\n');
-      return {
+      return this.buildBlockedResult({
         observation: `${safeTestName}: ${safeValue}. Reference: ${safeRefRange}.`,
         referenceComparison: 'Result requires manual review.',
-        significance: 'Unable to assess — output blocked by safety filter.',
-        technicalNotes: 'Guardrail triggered. Scientist review mandatory.',
-        patientSummary: '[Output blocked by safety filter. Please consult your doctor for result interpretation.]',
-        isCritical: false,
-        severity: 'BLOCKED',
-        provider: usedProvider,
-        blocked: true,
-        confidence: 0.0,
-        confidenceReasons: ['Guardrail block — no confidence in blocked output'],
-        qcVerified: false
-      };
+        provider: usedProvider
+      });
     }
     console.log('   ✅ PASSED: No forbidden content detected');
 
@@ -997,6 +1013,23 @@ export class LabBridgeEngine {
   }
 
   // --- COMPREHENSIVE MEDICAL SAFETY GUARDRAILS ---
+  buildBlockedResult({ observation, referenceComparison, provider }) {
+    return {
+      observation,
+      referenceComparison: referenceComparison || 'Result requires manual review.',
+      significance: 'Unable to assess — output blocked by safety filter.',
+      technicalNotes: 'Guardrail triggered. Scientist review mandatory.',
+      patientSummary: '[Output blocked by safety filter. Please consult your doctor for result interpretation.]',
+      isCritical: false,
+      severity: 'BLOCKED',
+      provider,
+      blocked: true,
+      confidence: 0.0,
+      confidenceReasons: ['Guardrail block — no confidence in blocked output'],
+      qcVerified: false
+    };
+  }
+
   applyHardcodedGuardrails(text) {
     if (!text || typeof text !== 'string') return false;
 
@@ -1037,7 +1070,8 @@ export class LabBridgeEngine {
     const allForbidden = [...forbiddenDrugs, ...forbiddenDiagnoses, ...forbiddenTreatments, ...forbiddenEmergency];
 
     for (const term of allForbidden) {
-      const regex = new RegExp(`\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`, 'i');
+      const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`\\b${escapedTerm}\\b`, 'i');
       if (regex.test(lowerText)) {
         console.warn(`🛡️ Guardrail hit: "${term}"`);
         return false;

@@ -4,6 +4,9 @@
   "main": "index.js",
   "type": "module",
   "description": "",
+  "scripts": {
+    "test": "node --import ./test/setup.js --test --test-concurrency=1 test/security.test.js"
+  },
   "dependencies": {
     "@google/genai": "openai/gpt-oss-120b",
     "@supabase/supabase-js": "^2.110.6",
