@@ -92,6 +92,41 @@ function maskRecordFields(testName, value, refRange) {
   };
 }
 
+const RECORD_SIGNATURE_FIELDS = [
+  'patient_name', 'test_name', 'test_value', 'unit', 'ref_range', 'translation',
+  'signed_by', 'created_at', 'is_urgent', 'ai_provider', 'was_blocked',
+  'patient_age', 'patient_sex', 'department', 'analyzer', 'sample_type',
+  'language', 'raw_finding'
+];
+
+function canonicalFieldValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+function buildRecordSignaturePayload(record, prefix) {
+  const fields = RECORD_SIGNATURE_FIELDS
+    .map(field => `${field}=${canonicalFieldValue(record[field])}`)
+    .join('|');
+  return `${prefix}|${fields}`;
+}
+
+function computeRecordSignature(record, prefix) {
+  return crypto
+    .createHmac('sha256', process.env.HMAC_SECRET_KEY)
+    .update(buildRecordSignaturePayload(record, prefix))
+    .digest('hex');
+}
+
+function signaturesEqual(expected, actual) {
+  if (typeof actual !== 'string') return false;
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  const actualBuffer = Buffer.from(actual, 'utf8');
+  return expectedBuffer.length === actualBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
 // 5. RATE LIMITING
 
 const processLimiter = rateLimit({
@@ -653,8 +688,7 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
   }
 
   const {
-    patientId, patientName, patientAge, patientSex, clinician,
-    testName, value, unit, refRange, analyzer, sampleType, language, department
+    patientId, clinician
   } = parseResult.data;
 
   const signedBy = req.userId;
@@ -664,9 +698,9 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
     const { data: draft, error: draftError } = await supabase
       .from('patient_records')
       .select('*')
-      .eq('patient_name', patientName)
-      .eq('test_name', testName)
-      .eq('test_value', value)
+      .eq('patient_name', parseResult.data.patientName)
+      .eq('test_name', parseResult.data.testName)
+      .eq('test_value', parseResult.data.value)
       .eq('signed_by', signedBy)
       .order('created_at', { ascending: false })
       .limit(1)
@@ -703,6 +737,14 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       });
     }
 
+    const expectedDraftSignature = computeRecordSignature(draft, 'DRAFT');
+    if (!signaturesEqual(expectedDraftSignature, draft.signature)) {
+      return res.status(409).json({
+        success: false,
+        error: 'The matching draft could not be verified and cannot be signed off.'
+      });
+    }
+
     if (!engine.applyHardcodedGuardrails(signedSummary)) {
       return res.status(409).json({
         success: false,
@@ -710,42 +752,52 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       });
     }
 
-    const signedRefRange = refRange || draft.ref_range || '';
-    const payloadString = `${patientName}|${testName}|${value}|${signedRefRange}|${signedSummary}|${timestamp}|${signedBy}`;
-    const signature = crypto
-      .createHmac('sha256', process.env.HMAC_SECRET_KEY)
-      .update(payloadString)
-      .digest('hex');
+    const signedFields = {
+      patient_name: draft.patient_name,
+      test_name: draft.test_name,
+      test_value: draft.test_value,
+      unit: draft.unit || '—',
+      ref_range: draft.ref_range,
+      translation: signedSummary,
+      signed_by: signedBy,
+      created_at: timestamp,
+      is_urgent: draft.is_urgent === true,
+      ai_provider: SIGNED_RECORD_PROVIDER,
+      was_blocked: false,
+      patient_age: draft.patient_age,
+      patient_sex: draft.patient_sex,
+      department: draft.department,
+      analyzer: draft.analyzer,
+      sample_type: draft.sample_type,
+      language: draft.language,
+      raw_finding: draft.raw_finding
+    };
+    const signature = computeRecordSignature(signedFields, 'SIGNED');
 
-    const { data: record, error: dbError } = await supabase
+    let updateQuery = supabase
       .from('patient_records')
-      .insert([{
-        patient_name: patientName,
-        test_name: testName,
-        test_value: value,
-        unit: unit || draft.unit || '—',
-        ref_range: signedRefRange,
-        translation: signedSummary,
-        signature: signature,
-        signed_by: signedBy,
-        created_at: timestamp,
-        is_urgent: draft.is_urgent === true,
-        ai_provider: SIGNED_RECORD_PROVIDER,
-        was_blocked: false,
-        patient_age: patientAge || draft.patient_age,
-        patient_sex: patientSex || draft.patient_sex,
-        department: department || draft.department || 'General',
-        analyzer: analyzer || draft.analyzer,
-        sample_type: sampleType || draft.sample_type,
-        language: language || draft.language,
-        raw_finding: draft.raw_finding
-      }])
+      .update({ ...signedFields, signature })
+      .eq('id', draft.id)
+      .eq('signature', draft.signature);
+
+    updateQuery = draft.ai_provider === null || draft.ai_provider === undefined
+      ? updateQuery.is('ai_provider', null)
+      : updateQuery.eq('ai_provider', draft.ai_provider);
+
+    const { data: record, error: dbError } = await updateQuery
       .select()
-      .single();
+      .maybeSingle();
 
     if (dbError) {
       console.error('❌ Record Save Error:', dbError.message);
       return res.status(500).json({ success: false, error: 'Failed to save record.' });
+    }
+
+    if (!record) {
+      return res.status(409).json({
+        success: false,
+        error: 'This draft was already signed or changed. Refresh and try again.'
+      });
     }
 
     await supabase
@@ -753,33 +805,41 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       .insert([{
         user_id: signedBy,
         action: 'SCIENTIST_SIGN_OFF',
-        target_patient: patientName,
+        target_patient: signedFields.patient_name,
         timestamp: timestamp,
-        details: { testName, value, signature: signature.slice(0, 16) }
+        details: {
+          testName: signedFields.test_name,
+          value: signedFields.test_value,
+          signature: signature.slice(0, 16)
+        }
       }]);
 
-    console.log(`✅ Record signed off by ${signedBy} for ${patientName}`);
+    console.log(`✅ Record signed off by ${signedBy} for ${signedFields.patient_name}`);
 
-    const responseFields = maskRecordFields(testName, value, signedRefRange);
+    const responseFields = maskRecordFields(
+      signedFields.test_name,
+      signedFields.test_value,
+      signedFields.ref_range
+    );
 
     res.json({
       success: true,
       record: {
-        patientId: patientId || patientName?.replace(/\s+/g, '-').toUpperCase(),
-        patientName,
-        patientAge: patientAge || draft.patient_age || '—',
-        patientSex: patientSex || draft.patient_sex || '—',
+        patientId: patientId || signedFields.patient_name?.replace(/\s+/g, '-').toUpperCase(),
+        patientName: signedFields.patient_name,
+        patientAge: signedFields.patient_age || '—',
+        patientSex: signedFields.patient_sex || '—',
         clinician: clinician || '—',
         testName: responseFields.testName,
         value: responseFields.value,
-        unit: responseFields.sensitive ? '—' : (unit || draft.unit || '—'),
+        unit: responseFields.sensitive ? '—' : (signedFields.unit || '—'),
         refRange: responseFields.refRange,
-        analyzer: analyzer || draft.analyzer || '—',
-        language: language || draft.language || 'SIMPLIFIED PLAIN ENGLISH',
+        analyzer: signedFields.analyzer || '—',
+        language: signedFields.language || 'SIMPLIFIED PLAIN ENGLISH',
         patientSummary: signedSummary,
         scientistDraft: signedSummary,
         scientistId: signedBy,
-        createdAt: timestamp,
+        createdAt: signedFields.created_at,
         hash: signature,
         aiVersion: draft.ai_provider || SIGNED_RECORD_PROVIDER,
         facilityName: process.env.FACILITY_NAME || 'Medical Laboratory'
@@ -817,36 +877,32 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
     const provider = resultObj.provider || 'Unknown';
     const wasBlocked = resultObj.blocked || false;
 
-    const draftPayload = `${patientName}|${testName}|${value}|${resultObj.observation}|${timestamp}`;
-    const draftHash = crypto
-      .createHmac('sha256', process.env.HMAC_SECRET_KEY)
-      .update(draftPayload)
-      .digest('hex');
+    const draftRecord = {
+      patient_name: patientName,
+      test_name: testName,
+      test_value: value,
+      unit: parseResult.data.unit || '—',
+      ref_range: refRange,
+      translation: translation,
+      signed_by: scientistId,
+      created_at: timestamp,
+      is_urgent: isCritical,
+      ai_provider: provider,
+      was_blocked: wasBlocked,
+      patient_age: parseResult.data.patientAge,
+      patient_sex: parseResult.data.patientSex,
+      department: department || 'General',
+      analyzer: parseResult.data.analyzer,
+      sample_type: parseResult.data.sampleType,
+      language: language,
+      raw_finding: rawFinding
+    };
+    const draftHash = computeRecordSignature(draftRecord, 'DRAFT');
 
     // FIX A5 + C2 + C3: Include unit, department, demographics
     const { error: dbError } = await supabase
       .from('patient_records')
-      .insert([{
-        patient_name: patientName,
-        test_name: testName,
-        test_value: value,
-        unit: parseResult.data.unit || '—',
-        ref_range: refRange,
-        translation: translation,
-        signature: draftHash,
-        signed_by: scientistId,
-        created_at: timestamp,
-        is_urgent: isCritical,
-        ai_provider: provider,
-        was_blocked: wasBlocked,
-        patient_age: parseResult.data.patientAge,
-        patient_sex: parseResult.data.patientSex,
-        department: department || 'General',
-        analyzer: parseResult.data.analyzer,
-        sample_type: parseResult.data.sampleType,
-        language: language,
-        raw_finding: rawFinding
-      }]);
+      .insert([{ ...draftRecord, signature: draftHash }]);
 
     if (dbError) {
       console.error('❌ Supabase Save Error:', dbError.message);
@@ -923,4 +979,13 @@ if (isDirectRun) {
   });
 }
 
-export { app, signToken, normalizeRole, maskRecordFields, SIGNED_RECORD_PROVIDER };
+export {
+  app,
+  signToken,
+  normalizeRole,
+  maskRecordFields,
+  buildRecordSignaturePayload,
+  computeRecordSignature,
+  RECORD_SIGNATURE_FIELDS,
+  SIGNED_RECORD_PROVIDER
+};

@@ -11,13 +11,24 @@ const SENSITIVE_TESTS = [
   'Pregnancy Test (hCG)'
 ];
 
+const SENSITIVE_TEST_PATTERNS = [
+  /\bhiv\b/,
+  /\bvdrl\b/,
+  /\b(?:hepatitis\s*b|hep\s*b|hbsag)\b/,
+  /\b(?:hepatitis\s*c|hep\s*c|hcv)\b/,
+  /\b(?:pregnan(?:cy|t)|hcg)\b/,
+  /\bretroviral\b/
+];
+
 export function normalizeTestName(testName) {
   return String(testName || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 export function isSensitiveTestName(testName) {
   const normalized = normalizeTestName(testName);
-  return SENSITIVE_TESTS.some(name => normalizeTestName(name) === normalized);
+  if (!normalized) return false;
+  return SENSITIVE_TESTS.some(name => normalizeTestName(name) === normalized)
+    || SENSITIVE_TEST_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
 // --- LANGUAGE TRANSLATION MAP (Reliable fallback when AI fails) ---
@@ -1039,10 +1050,8 @@ export class LabBridgeEngine {
       'ciprofloxacin', 'amoxicillin', 'paracetamol', 'panadol', 'flagyl',
       'metronidazole', 'artemether', 'artesunate', 'chloroquine', 'ibuprofen',
       'aspirin', 'acetaminophen', 'antibiotic', 'antibiotics', 'vitamin',
-      'supplement', 'tablet', 'capsule', 'syrup', 'injection', 'drip',
-      'intravenous', 'iv', 'dosage', 'dose', 'milligram', 'mg', 'ml',
-      'grams', 'microgram', 'mcg', 'prescription', 'medication', 'medicine',
-      'drug', 'pharmacy', 'chemist'
+      'supplement', 'prescription', 'medication', 'medicine', 'drug',
+      'pharmacy', 'chemist'
     ];
 
     const forbiddenDiagnoses = [
@@ -1055,11 +1064,17 @@ export class LabBridgeEngine {
       'infected with', 'suffering from', 'afflicted with'
     ];
 
-    const forbiddenTreatments = [
-      'take', 'drink', 'use', 'apply', 'inject', 'swallow', 'inhale',
-      'twice daily', 'three times', 'morning and night', 'before food',
-      'after food', 'on an empty stomach', 'with water', 'with milk',
-      'for 3 days', 'for 5 days', 'for 7 days', 'complete the course'
+    const forbiddenTreatmentPhrases = [
+      'morning and night', 'on an empty stomach', 'with water', 'with milk',
+      'complete the course'
+    ];
+
+    const forbiddenTreatmentPatterns = [
+      /\b(?:take|use|drink|apply|inject|swallow|inhale)\b[^.!?]{0,60}\b(?:tablets?|capsules?|pills?|syrups?|injections?|doses?|dosage|mg|ml|mcg|medicines?|medications?|drugs?)\b/i,
+      /\b\d+(?:\.\d+)?\s?(?:mg|ml|mcg|milligrams?|millilitres?)\b/i,
+      /\b(?:once|twice|three times)\s+(?:daily|a day|per day)\b/i,
+      /\b(?:before|after)\s+(?:food|meals?)\b/i,
+      /\bfor\s+\d+\s+(?:days?|weeks?)\b/i
     ];
 
     const forbiddenEmergency = [
@@ -1067,13 +1082,20 @@ export class LabBridgeEngine {
       'go immediately', 'do not wait', 'urgent attention', 'critical emergency'
     ];
 
-    const allForbidden = [...forbiddenDrugs, ...forbiddenDiagnoses, ...forbiddenTreatments, ...forbiddenEmergency];
+    const allForbidden = [...forbiddenDrugs, ...forbiddenDiagnoses, ...forbiddenTreatmentPhrases, ...forbiddenEmergency];
 
     for (const term of allForbidden) {
       const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(`\\b${escapedTerm}\\b`, 'i');
       if (regex.test(lowerText)) {
         console.warn(`🛡️ Guardrail hit: "${term}"`);
+        return false;
+      }
+    }
+
+    for (const pattern of forbiddenTreatmentPatterns) {
+      if (pattern.test(lowerText)) {
+        console.warn('🛡️ Guardrail hit: treatment instruction pattern');
         return false;
       }
     }

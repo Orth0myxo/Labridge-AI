@@ -150,6 +150,15 @@ export function installSupabaseMock() {
     if (method === 'PATCH') {
       const filtered = rows.filter(row => matches(row, url.searchParams));
       for (const row of filtered) Object.assign(row, body || {});
+
+      const prefer = headers.get('prefer') || '';
+      if (prefer.includes('return=representation')) {
+        if (accept.includes('application/vnd.pgrst.object+json')) {
+          return jsonBody(filtered[0] || null, filtered.length ? 200 : 406);
+        }
+        return jsonBody(filtered);
+      }
+
       return new Response(null, { status: 204 });
     }
 

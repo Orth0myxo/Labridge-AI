@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import crypto from 'crypto';
 import { once } from 'node:events';
 
-import { app, signToken } from '../src/index.js';
-import { LabBridgeEngine } from '../src/ai-core.js';
+import { app, signToken, computeRecordSignature, RECORD_SIGNATURE_FIELDS } from '../src/index.js';
+import { LabBridgeEngine, isSensitiveTestName } from '../src/ai-core.js';
 import { resetState, state } from './mock-supabase.js';
 
 let server;
@@ -32,15 +31,15 @@ async function request(path, { role, sub, method = 'GET', body } = {}) {
   return { status: response.status, data };
 }
 
-function signedRecord(overrides = {}) {
+function baseRecord(overrides = {}) {
   return {
+    id: 'record-1',
     patient_name: 'Ada Obi',
     test_name: 'Packed Cell Volume (PCV)',
     test_value: '30',
     unit: '%',
     ref_range: '36-46',
     translation: 'Your blood level test shows a lower number than the usual range. Please see your doctor.',
-    signature: 'signed-signature-1234',
     signed_by: 'MLS-1',
     created_at: new Date().toISOString(),
     is_urgent: false,
@@ -57,13 +56,20 @@ function signedRecord(overrides = {}) {
   };
 }
 
+function signedRecord(overrides = {}) {
+  const record = baseRecord(overrides);
+  record.signature = overrides.signature || computeRecordSignature(record, 'SIGNED');
+  return record;
+}
+
 function draftRecord(overrides = {}) {
-  return signedRecord({
-    signature: 'draft-signature-1234',
+  const record = baseRecord({
+    id: 'draft-1',
     ai_provider: 'openai/gpt-oss-120b',
-    was_blocked: false,
     ...overrides
   });
+  record.signature = overrides.signature || computeRecordSignature(record, 'DRAFT');
+  return record;
 }
 
 const signOffPayload = {
@@ -110,15 +116,32 @@ test('C1 enforces role-based access on every protected route group', async () =>
     ['/api/system/qc-status', 'admin', 200],
     ['/api/reference-ranges?test=ESR', 'clinician', 403],
     ['/api/reference-ranges?test=ESR', 'mls', 200],
+    ['/api/dashboard/stats', 'mls', 200],
+    ['/api/dashboard/stats', 'clinician', 200],
+    ['/api/dashboard/stats', 'surveillance', 200],
+    ['/api/dashboard/stats', 'admin', 200],
+    ['/api/admin/logs', 'clinician', 403],
+    ['/api/admin/logs', 'admin', 200],
     ['/api/records', 'mls', 403],
     ['/api/records', 'clinician', 200],
     ['/api/records', 'admin', 200],
+    ['/api/records/ADA-OBI', 'mls', 403],
+    ['/api/records/ADA-OBI', 'clinician', 404],
+    ['/api/records/ADA-OBI', 'admin', 404],
     ['/api/surveillance/wards', 'mls', 403],
     ['/api/surveillance/wards', 'clinician', 403],
     ['/api/surveillance/wards', 'surveillance', 200],
     ['/api/surveillance/wards', 'admin', 200],
+    ['/api/surveillance/wards/ICU', 'clinician', 403],
+    ['/api/surveillance/wards/ICU', 'surveillance', 200],
+    ['/api/surveillance/settings', 'clinician', 403],
+    ['/api/surveillance/settings', 'surveillance', 200],
     ['/api/records', 'clinician', 403, 'POST'],
-    ['/api/process', 'clinician', 403, 'POST']
+    ['/api/records', 'mls', 400, 'POST'],
+    ['/api/records', 'admin', 400, 'POST'],
+    ['/api/process', 'clinician', 403, 'POST'],
+    ['/api/process', 'mls', 400, 'POST'],
+    ['/api/process', 'admin', 400, 'POST']
   ];
 
   for (const [path, role, expected, method = 'GET'] of cases) {
@@ -137,11 +160,18 @@ test('C1 enforces role-based access on every protected route group', async () =>
 });
 
 test('C2 masks sensitive tests and results in list, detail and dashboard responses', async () => {
+  for (const name of ['HIV', 'HIV Test', 'HIV Rapid Test (screening)', 'Hep B', 'HBsAg', 'HCV', 'Pregnancy', 'Beta hCG']) {
+    assert.equal(isSensitiveTestName(name), true, name);
+  }
+  for (const name of ['Hepatitis A Antibody', 'Blood Group (ABO & Rh)', 'Packed Cell Volume (PCV)']) {
+    assert.equal(isSensitiveTestName(name), false, name);
+  }
+
   resetState({
     patient_records: [
       signedRecord({
         patient_name: 'Ada Obi',
-        test_name: 'HIV Rapid Test',
+        test_name: 'HIV',
         test_value: 'Reactive',
         unit: '—',
         ref_range: 'Non-reactive / Reactive',
@@ -227,7 +257,12 @@ test('C3 guardrails match whole words and apply to qualitative translations', as
 
   assert.equal(engine.applyHardcodedGuardrails('mistake'), true);
   assert.equal(engine.applyHardcodedGuardrails('Your test result is within the healthy range.'), true);
+  assert.equal(engine.applyHardcodedGuardrails('Please take a moment to read this.'), true);
+  assert.equal(engine.applyHardcodedGuardrails('Use the left arm for the sample.'), true);
+  assert.equal(engine.applyHardcodedGuardrails('Drink plenty of water today.'), true);
   assert.equal(engine.applyHardcodedGuardrails('Take two tablets of paracetamol twice daily.'), false);
+  assert.equal(engine.applyHardcodedGuardrails('Take one tablet daily.'), false);
+  assert.equal(engine.applyHardcodedGuardrails('Complete the course.'), false);
   assert.equal(engine.applyHardcodedGuardrails('You are positive for hepatitis.'), false);
 
   engine.translateMessage = async () => ({
@@ -279,23 +314,64 @@ test('C4/C5 signs only the authenticated user matching draft and hashes the revi
   assert.equal(result.data.record.patientSummary, draft.translation);
   assert.notEqual(result.data.record.patientSummary, signOffPayload.patientSummary);
 
-  const expectedHash = crypto
-    .createHmac('sha256', process.env.HMAC_SECRET_KEY)
-    .update(`${signOffPayload.patientName}|${signOffPayload.testName}|${signOffPayload.value}|${signOffPayload.refRange}|${draft.translation}|${result.data.record.createdAt}|MLS-1`)
-    .digest('hex');
-
-  assert.equal(result.data.record.hash, expectedHash);
-
   const signed = state.patient_records.find(record => record.ai_provider === 'LabBridge Engine');
   assert.equal(signed.signed_by, 'MLS-1');
   assert.equal(signed.translation, draft.translation);
   assert.equal(signed.is_urgent, true);
   assert.equal(state.audit_logs.at(-1).user_id, 'MLS-1');
+  assert.equal(result.data.record.hash, computeRecordSignature(signed, 'SIGNED'));
+
+  for (const field of RECORD_SIGNATURE_FIELDS) {
+    const tampered = { ...signed, [field]: `${signed[field] ?? ''}-tampered` };
+    assert.notEqual(
+      computeRecordSignature(tampered, 'SIGNED'),
+      signed.signature,
+      `signature must cover ${field}`
+    );
+  }
 
   const list = await request('/api/records', { role: 'clinician' });
   assert.equal(list.status, 200);
   assert.equal(list.data.records.length, 1);
   assert.equal(list.data.records[0].patientName, 'Ada Obi');
+});
+
+test('C4 rejects drafts that were not signed by the server and prevents concurrent sign-off', async () => {
+  const invalidDraft = draftRecord();
+  invalidDraft.signature = 'not-a-valid-server-signature';
+  resetState({ patient_records: [invalidDraft] });
+
+  let result = await request('/api/records', {
+    role: 'mls',
+    sub: 'MLS-1',
+    method: 'POST',
+    body: signOffPayload
+  });
+  assert.equal(result.status, 409);
+  assert.match(result.data.error, /could not be verified/);
+
+  resetState({ patient_records: [draftRecord()] });
+
+  const [first, second] = await Promise.all([
+    request('/api/records', {
+      role: 'mls',
+      sub: 'MLS-1',
+      method: 'POST',
+      body: signOffPayload
+    }),
+    request('/api/records', {
+      role: 'mls',
+      sub: 'MLS-1',
+      method: 'POST',
+      body: signOffPayload
+    })
+  ]);
+
+  assert.deepEqual([first.status, second.status].sort(), [200, 409]);
+  assert.equal(
+    state.patient_records.filter(record => record.ai_provider === 'LabBridge Engine').length,
+    1
+  );
 });
 
 test('C4 rejects blocked drafts, unsafe drafts, missing drafts and duplicate sign-off', async () => {
