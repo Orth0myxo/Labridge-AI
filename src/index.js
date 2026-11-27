@@ -11,6 +11,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { LabBridgeEngine, isSensitiveTestName } from './ai-core.js';
+import { buildDeidentifiedClinicalData, safeErrorCode } from './privacy.js';
 
 // 1. ENVIRONMENT VALIDATION
 
@@ -72,6 +73,7 @@ const engine = new LabBridgeEngine(
 const SIGNED_RECORD_PROVIDER = 'LabBridge Engine';
 const SENSITIVE_TEST_LABEL = 'Confidential test';
 const SENSITIVE_VALUE_LABEL = 'Result withheld';
+const PATIENT_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$/;
 const LANGUAGE_VALUES = [
   'SIMPLIFIED PLAIN ENGLISH',
   'NIGERIAN/GHANAIAN PIDGIN',
@@ -92,12 +94,30 @@ function maskRecordFields(testName, value, refRange) {
   };
 }
 
-const RECORD_SIGNATURE_FIELDS = [
+const LEGACY_RECORD_SIGNATURE_FIELDS = [
   'patient_name', 'test_name', 'test_value', 'unit', 'ref_range', 'translation',
   'signed_by', 'created_at', 'is_urgent', 'ai_provider', 'was_blocked',
   'patient_age', 'patient_sex', 'department', 'analyzer', 'sample_type',
   'language', 'raw_finding'
 ];
+
+const RECORD_SIGNATURE_FIELDS = [
+  'signature_version', 'patient_id', ...LEGACY_RECORD_SIGNATURE_FIELDS
+];
+
+function normalizePatientId(patientId) {
+  return String(patientId || '').trim().toUpperCase();
+}
+
+function getStoredPatientId(record) {
+  if (record.patient_id) return record.patient_id;
+  if (record.id) return `LEGACY-${record.id}`;
+  return 'UNKNOWN';
+}
+
+function logRouteError(context, error) {
+  console.error(`${context} code=${safeErrorCode(error)}`);
+}
 
 function canonicalFieldValue(value) {
   if (value === null || value === undefined) return '';
@@ -106,7 +126,10 @@ function canonicalFieldValue(value) {
 }
 
 function buildRecordSignaturePayload(record, prefix) {
-  const fields = RECORD_SIGNATURE_FIELDS
+  const signatureFields = Number(record.signature_version) >= 2
+    ? RECORD_SIGNATURE_FIELDS
+    : LEGACY_RECORD_SIGNATURE_FIELDS;
+  const fields = signatureFields
     .map(field => `${field}=${canonicalFieldValue(record[field])}`)
     .join('|');
   return `${prefix}|${fields}`;
@@ -125,6 +148,10 @@ function signaturesEqual(expected, actual) {
   const actualBuffer = Buffer.from(actual, 'utf8');
   return expectedBuffer.length === actualBuffer.length
     && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function verifyRecordSignature(record, prefix) {
+  return signaturesEqual(computeRecordSignature(record, prefix), record.signature);
 }
 
 // 5. RATE LIMITING
@@ -148,7 +175,7 @@ const loginLimiter = rateLimit({
 // 6. INPUT VALIDATION SCHEMAS
 // FIX A1: value is optional when rawFinding is present for qualitative tests
 const ProcessRequestSchema = z.object({
-  patientId: z.string().max(50).optional(),
+  patientId: z.string().trim().min(1).max(50).regex(PATIENT_ID_REGEX, 'Patient ID has an invalid format.'),
   patientName: z.string().min(1).max(100).trim(),
   patientAge: z.string().max(20).optional(),
   patientSex: z.string().max(20).optional(),
@@ -178,8 +205,12 @@ const LoginSchema = z.object({
   password: z.string().min(1).max(100)
 });
 
+const RecordLookupSchema = z.object({
+  recordId: z.string().max(100).trim().optional()
+});
+
 const RecordSchema = z.object({
-  patientId: z.string().max(50).optional(),
+  patientId: z.string().trim().min(1).max(50).regex(PATIENT_ID_REGEX, 'Patient ID has an invalid format.'),
   patientName: z.string().min(1).max(100).trim(),
   patientAge: z.string().max(20).optional(),
   patientSex: z.string().max(20).optional(),
@@ -197,6 +228,7 @@ const RecordSchema = z.object({
 // FIX B6: Human-friendly Zod error mapper
 function formatZodErrors(error) {
   const fieldNames = {
+    patientId: 'Patient ID',
     patientName: 'Patient name',
     testName: 'Test name',
     value: 'Result value',
@@ -348,7 +380,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     });
 
   } catch (err) {
-    console.error('LOGIN_ERROR:', err);
+    logRouteError('LOGIN_ERROR', err);
     res.status(500).json({ success: false, error: 'Login failed. Please try again.' });
   }
 });
@@ -376,7 +408,7 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('ME_ERROR:', err);
+    logRouteError('ME_ERROR', err);
     res.status(500).json({ success: false, error: 'Failed to fetch user.' });
   }
 });
@@ -435,7 +467,7 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
     });
 
   } catch (err) {
-    console.error('DASHBOARD_ERROR:', err);
+    logRouteError('DASHBOARD_ERROR', err);
     res.status(500).json({ success: false, error: 'Failed to load dashboard data.' });
   }
 });
@@ -560,7 +592,8 @@ app.get('/api/records', authenticate, authorize('clinician', 'admin'), async (re
       records: (records || []).map(r => {
         const masked = maskRecordFields(r.test_name, r.test_value, r.ref_range);
         return {
-          patientId: r.patient_name?.replace(/\s+/g, '-').toUpperCase() || 'UNKNOWN',
+          recordId: r.id,
+          patientId: getStoredPatientId(r),
           patientName: r.patient_name,
           testName: masked.testName,
           value: masked.value,
@@ -574,26 +607,34 @@ app.get('/api/records', authenticate, authorize('clinician', 'admin'), async (re
     });
 
   } catch (err) {
-    console.error('RECORDS_ERROR:', err);
+    logRouteError('RECORDS_ERROR', err);
     res.status(500).json({ success: false, error: 'Failed to load records.' });
   }
 });
 
 // FIX A4: Use r.unit from database
 app.get('/api/records/:patientId', authenticate, authorize('clinician', 'admin'), async (req, res) => {
-  const { patientId } = req.params;
+  const patientId = normalizePatientId(req.params.patientId);
+  const lookup = RecordLookupSchema.safeParse(req.query);
+  if (!lookup.success) {
+    return res.status(400).json({ success: false, error: 'Invalid record identifier.' });
+  }
 
   try {
-    const searchName = patientId.replace(/-/g, ' ');
-
-    const { data: record, error } = await supabase
+    let query = supabase
       .from('patient_records')
       .select('*')
-      .ilike('patient_name', `%${searchName}%`)
-      .eq('ai_provider', SIGNED_RECORD_PROVIDER)
+      .eq('patient_id', patientId)
+      .eq('ai_provider', SIGNED_RECORD_PROVIDER);
+
+    if (lookup.data.recordId) {
+      query = query.eq('id', lookup.data.recordId);
+    }
+
+    const { data: record, error } = await query
       .order('created_at', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
     if (error || !record) {
       return res.status(404).json({ success: false, error: 'Record not found.' });
@@ -604,7 +645,8 @@ app.get('/api/records/:patientId', authenticate, authorize('clinician', 'admin')
     res.json({
       success: true,
       record: {
-        patientId: record.patient_name?.replace(/\s+/g, '-').toUpperCase() || 'UNKNOWN',
+        recordId: record.id,
+        patientId: getStoredPatientId(record),
         patientName: record.patient_name,
         patientAge: record.patient_age || '—',
         patientSex: record.patient_sex || '—',
@@ -626,7 +668,7 @@ app.get('/api/records/:patientId', authenticate, authorize('clinician', 'admin')
     });
 
   } catch (err) {
-    console.error('RECORD_DETAIL_ERROR:', err);
+    logRouteError('RECORD_DETAIL_ERROR', err);
     res.status(500).json({ success: false, error: 'Failed to load record.' });
   }
 });
@@ -671,7 +713,7 @@ app.get('/api/admin/logs', authenticate, authorize('admin'), async (req, res) =>
       }))
     });
   } catch (err) {
-    console.error('ADMIN_LOGS_ERROR:', err);
+    logRouteError('ADMIN_LOGS_ERROR', err);
     res.json({ success: true, logs: [] });
   }
 });
@@ -688,8 +730,9 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
   }
 
   const {
-    patientId, clinician
+    patientId: requestedPatientId, clinician
   } = parseResult.data;
+  const patientId = normalizePatientId(requestedPatientId);
 
   const signedBy = req.userId;
   const timestamp = new Date().toISOString();
@@ -698,7 +741,7 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
     const { data: draft, error: draftError } = await supabase
       .from('patient_records')
       .select('*')
-      .eq('patient_name', parseResult.data.patientName)
+      .eq('patient_id', patientId)
       .eq('test_name', parseResult.data.testName)
       .eq('test_value', parseResult.data.value)
       .eq('signed_by', signedBy)
@@ -737,8 +780,7 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       });
     }
 
-    const expectedDraftSignature = computeRecordSignature(draft, 'DRAFT');
-    if (!signaturesEqual(expectedDraftSignature, draft.signature)) {
+    if (!verifyRecordSignature(draft, 'DRAFT')) {
       return res.status(409).json({
         success: false,
         error: 'The matching draft could not be verified and cannot be signed off.'
@@ -753,6 +795,8 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
     }
 
     const signedFields = {
+      signature_version: 2,
+      patient_id: draft.patient_id || patientId,
       patient_name: draft.patient_name,
       test_name: draft.test_name,
       test_value: draft.test_value,
@@ -789,7 +833,7 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       .maybeSingle();
 
     if (dbError) {
-      console.error('❌ Record Save Error:', dbError.message);
+      logRouteError('RECORD_SAVE_ERROR', dbError);
       return res.status(500).json({ success: false, error: 'Failed to save record.' });
     }
 
@@ -805,16 +849,15 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
       .insert([{
         user_id: signedBy,
         action: 'SCIENTIST_SIGN_OFF',
-        target_patient: signedFields.patient_name,
+        target_patient: signedFields.patient_id,
         timestamp: timestamp,
         details: {
-          testName: signedFields.test_name,
-          value: signedFields.test_value,
+          recordId: draft.id,
           signature: signature.slice(0, 16)
         }
       }]);
 
-    console.log(`✅ Record signed off by ${signedBy} for ${signedFields.patient_name}`);
+    console.log(`[records] Sign-off complete record=${draft.id} staff=${signedBy}`);
 
     const responseFields = maskRecordFields(
       signedFields.test_name,
@@ -825,7 +868,8 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
     res.json({
       success: true,
       record: {
-        patientId: patientId || signedFields.patient_name?.replace(/\s+/g, '-').toUpperCase(),
+        recordId: draft.id,
+        patientId: signedFields.patient_id,
         patientName: signedFields.patient_name,
         patientAge: signedFields.patient_age || '—',
         patientSex: signedFields.patient_sex || '—',
@@ -847,7 +891,7 @@ app.post('/api/records', authenticate, authorize('mls', 'admin'), async (req, re
     });
 
   } catch (err) {
-    console.error('SIGN_OFF_ERROR:', err);
+    logRouteError('SIGN_OFF_ERROR', err);
     res.status(500).json({ success: false, error: 'Sign-off failed.' });
   }
 });
@@ -863,14 +907,21 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
     });
   }
 
-  const { patientName, testName, value, refRange, language, rawFinding, department } = parseResult.data;
+  const {
+    patientId: requestedPatientId, patientName, clinician,
+    testName, value, refRange, language, rawFinding, department
+  } = parseResult.data;
+  const patientId = normalizePatientId(requestedPatientId);
   const scientistId = req.userId;
 
   try {
-    const patientData = { testName, value, refRange, rawFinding };
+    const providerPatientData = buildDeidentifiedClinicalData(
+      { testName, value, refRange, rawFinding },
+      [patientName, patientId, clinician]
+    );
     const timestamp = new Date().toISOString();
 
-    const resultObj = await engine.processResult(patientData, language);
+    const resultObj = await engine.processResult(providerPatientData, language);
     const translation = resultObj.patientSummary;
     const isCritical = resultObj.isCritical;
     const severity = resultObj.severity;
@@ -878,6 +929,8 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
     const wasBlocked = resultObj.blocked || false;
 
     const draftRecord = {
+      signature_version: 2,
+      patient_id: patientId,
       patient_name: patientName,
       test_name: testName,
       test_value: value,
@@ -905,9 +958,9 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
       .insert([{ ...draftRecord, signature: draftHash }]);
 
     if (dbError) {
-      console.error('❌ Supabase Save Error:', dbError.message);
+      logRouteError('PROCESS_DRAFT_SAVE_ERROR', dbError);
     } else {
-      console.log(`\x1b[32m💾 Saved signed record for Patient: ${patientName} by ${scientistId}\x1b[0m`);
+      console.log(`[process] Draft saved staff=${scientistId}`);
     }
 
     const { error: auditError } = await supabase
@@ -915,19 +968,20 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
       .insert([{
         user_id: scientistId,
         action: wasBlocked ? 'VERIFY_AND_SIGN_REPORT_BLOCKED' : 'VERIFY_AND_SIGN_REPORT',
-        target_patient: patientName,
+        target_patient: patientId,
         timestamp: timestamp,
         details: { provider, wasBlocked, isCritical, severity }
       }]);
 
     if (auditError) {
-      console.error('⚠️ Audit Log Failed:', auditError.message);
+      logRouteError('PROCESS_AUDIT_LOG_ERROR', auditError);
     } else {
       console.log('\x1b[32m📋 Audit log saved\x1b[0m');
     }
 
     res.json({
       success: true,
+      patientId,
       observation: resultObj.observation,
       referenceComparison: resultObj.referenceComparison,
       significance: resultObj.significance,
@@ -948,7 +1002,7 @@ app.post('/api/process', authenticate, authorize('mls', 'admin'), processLimiter
     });
 
   } catch (error) {
-    console.error('PROCESS_ERROR:', error);
+    logRouteError('PROCESS_ERROR', error);
     res.status(500).json({
       success: false,
       error: 'An error occurred while processing your request. Please try again or contact support.'
@@ -981,11 +1035,16 @@ if (isDirectRun) {
 
 export {
   app,
+  engine,
   signToken,
   normalizeRole,
+  normalizePatientId,
+  getStoredPatientId,
   maskRecordFields,
   buildRecordSignaturePayload,
   computeRecordSignature,
+  verifyRecordSignature,
   RECORD_SIGNATURE_FIELDS,
+  LEGACY_RECORD_SIGNATURE_FIELDS,
   SIGNED_RECORD_PROVIDER
 };

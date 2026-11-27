@@ -2,8 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 
-import { app, signToken, computeRecordSignature, RECORD_SIGNATURE_FIELDS } from '../src/index.js';
-import { LabBridgeEngine, isSensitiveTestName } from '../src/ai-core.js';
+import {
+  app, engine, signToken, computeRecordSignature, verifyRecordSignature,
+  RECORD_SIGNATURE_FIELDS, LEGACY_RECORD_SIGNATURE_FIELDS
+} from '../src/index.js';
+import { LabBridgeEngine, isSensitiveTestName, parseReferenceRange, describeReferenceComparison } from '../src/ai-core.js';
+import { buildDeidentifiedClinicalData, redactIdentifiers } from '../src/privacy.js';
 import { resetState, state } from './mock-supabase.js';
 
 let server;
@@ -34,6 +38,7 @@ async function request(path, { role, sub, method = 'GET', body } = {}) {
 function baseRecord(overrides = {}) {
   return {
     id: 'record-1',
+    patient_id: 'ADA-OBI',
     patient_name: 'Ada Obi',
     test_name: 'Packed Cell Volume (PCV)',
     test_value: '30',
@@ -170,6 +175,7 @@ test('C2 masks sensitive tests and results in list, detail and dashboard respons
   resetState({
     patient_records: [
       signedRecord({
+        patient_id: 'ADA-OBI',
         patient_name: 'Ada Obi',
         test_name: 'HIV',
         test_value: 'Reactive',
@@ -178,6 +184,7 @@ test('C2 masks sensitive tests and results in list, detail and dashboard respons
         translation: 'Your test result needs to be discussed with your doctor.'
       }),
       signedRecord({
+        patient_id: 'BOLA-ADE',
         patient_name: 'Bola Ade',
         test_name: 'Packed Cell Volume (PCV)',
         test_value: '40',
@@ -430,4 +437,249 @@ test('C4 rejects blocked drafts, unsafe drafts, missing drafts and duplicate sig
   });
   assert.equal(result.status, 409);
   assert.match(result.data.error, /already been signed/);
+});
+
+test('C6 redacts identifiers before AI calls and keeps PHI out of application logs', async () => {
+  assert.equal(
+    redactIdentifiers('Ada Obi PT-0001 ada@example.com', ['Ada Obi', 'PT-0001']),
+    '[REDACTED] [REDACTED] [REDACTED]'
+  );
+  assert.equal(
+    redactIdentifiers('Call +234 803 123 4567, visit 12 Allen Avenue, or see https://example.com/path', []),
+    'Call [REDACTED], visit [REDACTED], or see [REDACTED]'
+  );
+  assert.equal(redactIdentifiers('100000000', []), '100000000');
+
+  const redacted = buildDeidentifiedClinicalData({
+    testName: 'Packed Cell Volume (PCV)',
+    value: 'Ada Obi 30',
+    refRange: '36-46',
+    rawFinding: 'Ada Obi PT-0001 ada@example.com'
+  }, ['Ada Obi', 'PT-0001']);
+
+  assert.equal(redacted.testName, 'Packed Cell Volume (PCV)');
+  assert.doesNotMatch(redacted.value, /Ada Obi|PT-0001/);
+  assert.doesNotMatch(redacted.rawFinding, /Ada Obi|PT-0001|ada@example\.com/);
+  assert.match(redacted.rawFinding, /REDACTED/);
+
+  const preservedTestName = buildDeidentifiedClinicalData({
+    testName: 'HIV Rapid Test',
+    value: 'Reactive',
+    refRange: 'Non-reactive / Reactive',
+    rawFinding: 'HIV patient record'
+  }, ['HIV']);
+  assert.equal(preservedTestName.testName, 'HIV Rapid Test');
+  assert.equal(isSensitiveTestName(preservedTestName.testName), true);
+
+  const localEngine = new LabBridgeEngine('test-gemini-key', null);
+  localEngine.groqKey = null;
+  localEngine.openAiKey = null;
+  localEngine.callGemini = async () => {
+    throw new Error('external AI must not be called');
+  };
+  localEngine.translateMessage = async () => ({
+    text: 'Your test result needs to be discussed with your doctor.',
+    provider: 'Test translator'
+  });
+
+  let significanceCalled = false;
+  localEngine.generateClinicalSignificance = async () => {
+    significanceCalled = true;
+    return 'Test significance';
+  };
+
+  const sensitive = await localEngine.processResult({
+    testName: 'HIV Rapid Test',
+    value: 'Reactive',
+    refRange: 'Non-reactive / Reactive',
+    rawFinding: 'Ada Obi Reactive'
+  }, 'SIMPLIFIED PLAIN ENGLISH');
+
+  assert.equal(significanceCalled, false);
+  assert.equal(sensitive.blocked, false);
+
+  const sensitiveNumeric = await localEngine.processResult({
+    testName: 'HIV Viral Load',
+    value: '1000',
+    refRange: '<50'
+  }, 'SIMPLIFIED PLAIN ENGLISH');
+  assert.equal(sensitiveNumeric.severity, 'CRITICAL_HIGH');
+
+  resetState();
+
+  const originalProcess = engine.processResult;
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const logs = [];
+  let received = null;
+
+  console.log = (...args) => logs.push(args.join(' '));
+  console.warn = (...args) => logs.push(args.join(' '));
+  console.error = (...args) => logs.push(args.join(' '));
+  engine.processResult = async (data) => {
+    received = data;
+    return {
+      observation: 'Observation',
+      referenceComparison: 'Reference comparison',
+      significance: 'Significance',
+      technicalNotes: 'Technical notes',
+      patientSummary: 'Your test result needs to be discussed with your doctor.',
+      isCritical: false,
+      severity: 'NORMAL',
+      provider: 'test-provider',
+      blocked: false,
+      confidence: 0.9,
+      confidenceReasons: [],
+      qcVerified: true,
+      rawFinding: null
+    };
+  };
+
+  try {
+    const result = await request('/api/process', {
+      role: 'mls',
+      sub: 'MLS-1',
+      method: 'POST',
+      body: {
+        patientId: ' pt-0001 ',
+        patientName: 'Ada Obi',
+        patientAge: '30',
+        patientSex: 'F',
+        clinician: 'Dr Bello',
+        testName: 'Packed Cell Volume (PCV)',
+        value: 'Ada Obi 30',
+        unit: '%',
+        refRange: '36-46',
+        language: 'SIMPLIFIED PLAIN ENGLISH',
+        rawFinding: 'Ada Obi PT-0001 ada@example.com'
+      }
+    });
+
+    assert.equal(result.status, 200, JSON.stringify(result.data));
+    assert.equal(received.value.includes('Ada Obi'), false);
+    assert.equal(received.rawFinding.includes('PT-0001'), false);
+    assert.match(received.rawFinding, /REDACTED/);
+    assert.equal(result.data.patientId, 'PT-0001');
+
+    const draft = state.patient_records.find(record => record.patient_id === 'PT-0001');
+    assert.ok(draft);
+    assert.equal(draft.test_value, 'Ada Obi 30');
+  } finally {
+    engine.processResult = originalProcess;
+    console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+
+  assert.doesNotMatch(logs.join('\n'), /Ada Obi|PT-0001|ada@example\.com/);
+});
+
+test('C7 stores patient IDs and retrieves records by exact identity', async () => {
+  resetState({
+    patient_records: [
+      signedRecord({
+        id: 'record-a',
+        patient_id: 'PT-0001',
+        patient_name: 'Ada Obi',
+        test_name: 'Packed Cell Volume (PCV)',
+        test_value: '40'
+      }),
+      signedRecord({
+        id: 'record-b',
+        patient_id: 'PT-0002',
+        patient_name: 'Ada Obi',
+        test_name: 'Packed Cell Volume (PCV)',
+        test_value: '30'
+      })
+    ]
+  });
+
+  const list = await request('/api/records', { role: 'clinician' });
+  assert.equal(list.status, 200);
+  const second = list.data.records.find(record => record.recordId === 'record-b');
+  assert.equal(second.patientId, 'PT-0002');
+
+  const detail = await request('/api/records/PT-0002', { role: 'clinician' });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.data.record.recordId, 'record-b');
+  assert.equal(detail.data.record.patientId, 'PT-0002');
+
+  const crossPatient = await request('/api/records/PT-0002?recordId=record-a', { role: 'clinician' });
+  assert.equal(crossPatient.status, 404);
+
+  resetState({
+    patient_records: [
+      draftRecord({ id: 'draft-a', patient_id: 'PT-0001' }),
+      draftRecord({ id: 'draft-b', patient_id: 'PT-0002' })
+    ]
+  });
+
+  const signOff = await request('/api/records', {
+    role: 'mls',
+    sub: 'MLS-1',
+    method: 'POST',
+    body: { ...signOffPayload, patientId: 'pt-0002' }
+  });
+
+  assert.equal(signOff.status, 200, JSON.stringify(signOff.data));
+  assert.equal(signOff.data.record.patientId, 'PT-0002');
+  assert.notEqual(state.patient_records.find(record => record.id === 'draft-a').ai_provider, 'LabBridge Engine');
+  assert.equal(state.patient_records.find(record => record.id === 'draft-b').ai_provider, 'LabBridge Engine');
+});
+
+test('C7 preserves legacy signature verification while versioning new records', () => {
+  assert.equal(LEGACY_RECORD_SIGNATURE_FIELDS.includes('patient_id'), false);
+  assert.equal(RECORD_SIGNATURE_FIELDS.includes('signature_version'), true);
+  assert.equal(RECORD_SIGNATURE_FIELDS.includes('patient_id'), true);
+
+  const legacy = signedRecord({ patient_id: 'PT-0001', signature_version: 1 });
+  assert.equal(verifyRecordSignature(legacy, 'SIGNED'), true);
+
+  const modern = signedRecord({ patient_id: 'PT-0002', signature_version: 2 });
+  assert.equal(verifyRecordSignature(modern, 'SIGNED'), true);
+  assert.equal(verifyRecordSignature({ ...modern, patient_id: 'PT-9999' }, 'SIGNED'), false);
+});
+
+test('C8 grades one-sided reference ranges correctly', () => {
+  const localEngine = new LabBridgeEngine('test-gemini-key', null);
+
+  assert.deepEqual(parseReferenceRange('<5.2'), { type: 'upper', limit: 5.2, inclusive: false });
+  assert.deepEqual(parseReferenceRange('<=7.8'), { type: 'upper', limit: 7.8, inclusive: true });
+  assert.deepEqual(parseReferenceRange('>1.0'), { type: 'lower', limit: 1.0, inclusive: false });
+  assert.deepEqual(parseReferenceRange('\u22651.0'), { type: 'lower', limit: 1.0, inclusive: true });
+  assert.deepEqual(parseReferenceRange('less than 5.2'), { type: 'upper', limit: 5.2, inclusive: false });
+  assert.deepEqual(parseReferenceRange('at least 1.0'), { type: 'lower', limit: 1.0, inclusive: true });
+  assert.deepEqual(parseReferenceRange('36 - 46'), { type: 'between', low: 36, high: 46 });
+  assert.equal(parseReferenceRange('Negative / Positive'), null);
+
+  const cases = [
+    ['5.1', '<5.2', 'NORMAL', false],
+    ['5.2', '<5.2', 'MILD_HIGH', false],
+    ['7.8', '<5.2', 'MODERATE_HIGH', false],
+    ['10.4', '<5.2', 'CRITICAL_HIGH', true],
+    ['1.2', '>1.0', 'NORMAL', false],
+    ['0.8', '>1.0', 'MILD_LOW', false],
+    ['0', '>1.0', 'CRITICAL_LOW', true],
+    ['7.8', '<=7.8', 'NORMAL', false],
+    ['8.0', '\u22647.8', 'MILD_HIGH', false],
+    ['1.0', '\u22651.0', 'NORMAL', false],
+    ['30', '36-46', 'MODERATE_LOW', false]
+  ];
+
+  for (const [value, range, severity, critical] of cases) {
+    const result = localEngine.computeSeverity(value, range);
+    assert.equal(result.severity, severity, `${value} vs ${range}`);
+    assert.equal(result.isCritical, critical, `${value} vs ${range}`);
+  }
+
+  assert.match(describeReferenceComparison('10.4', '<5.2'), /above the upper reference limit/);
+  assert.match(describeReferenceComparison('0.4', '>1.0'), /below the lower reference limit/);
+
+  const inRangeConfidence = localEngine.calculateConfidence('0', '<5.2', 'Custom test', 'NORMAL');
+  assert.ok(inRangeConfidence.score >= 0.9, JSON.stringify(inRangeConfidence));
+  assert.doesNotMatch(inRangeConfidence.reasons.join(' '), /Extreme deviation/);
+
+  const criticalConfidence = localEngine.calculateConfidence('10.4', '<5.2', 'Custom test', 'CRITICAL_HIGH');
+  assert.ok(criticalConfidence.score < inRangeConfidence.score);
 });

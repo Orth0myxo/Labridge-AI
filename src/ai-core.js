@@ -31,6 +31,87 @@ export function isSensitiveTestName(testName) {
     || SENSITIVE_TEST_PATTERNS.some(pattern => pattern.test(normalized));
 }
 
+function providerHttpError(provider, statusCode) {
+  return new Error(`${provider} request failed with HTTP ${statusCode}`);
+}
+
+export function parseReferenceRange(refRange) {
+  if (refRange === null || refRange === undefined) return null;
+  const text = String(refRange)
+    .trim()
+    .replace(/\u2212/g, '-')
+    .replace(/\u2264/g, '<=')
+    .replace(/\u2265/g, '>=')
+    .replace(/\s+/g, ' ');
+  if (!text) return null;
+
+  let match = text.match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) {
+    const low = Number.parseFloat(match[1]);
+    const high = Number.parseFloat(match[2]);
+    if (Number.isFinite(low) && Number.isFinite(high) && low <= high) {
+      return { type: 'between', low, high };
+    }
+    return null;
+  }
+
+  match = text.match(/^(<=|<)\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) {
+    return { type: 'upper', limit: Number.parseFloat(match[2]), inclusive: match[1] === '<=' };
+  }
+
+  match = text.match(/^(>=|>)\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) {
+    return { type: 'lower', limit: Number.parseFloat(match[2]), inclusive: match[1] === '>=' };
+  }
+
+  match = text.match(/^(?:less than|below|under)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'upper', limit: Number.parseFloat(match[1]), inclusive: false };
+
+  match = text.match(/^(?:up to|at most|no more than|not more than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'upper', limit: Number.parseFloat(match[1]), inclusive: true };
+
+  match = text.match(/^(?:greater than|above|over|more than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'lower', limit: Number.parseFloat(match[1]), inclusive: false };
+
+  match = text.match(/^(?:at least|no less than|not less than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'lower', limit: Number.parseFloat(match[1]), inclusive: true };
+
+  return null;
+}
+
+function isReferenceInRange(value, range) {
+  if (!range || !Number.isFinite(value)) return false;
+  if (range.type === 'between') return value >= range.low && value <= range.high;
+  if (range.type === 'upper') return range.inclusive ? value <= range.limit : value < range.limit;
+  if (range.type === 'lower') return range.inclusive ? value >= range.limit : value > range.limit;
+  return false;
+}
+
+export function describeReferenceComparison(value, refRange) {
+  const numValue = Number.parseFloat(String(value ?? '').trim());
+  const range = parseReferenceRange(refRange);
+  if (!range || !Number.isFinite(numValue)) {
+    return 'Reference interval could not be interpreted automatically.';
+  }
+
+  if (isReferenceInRange(numValue, range)) {
+    return `Result is within the reference interval (${refRange}).`;
+  }
+
+  if (range.type === 'between') {
+    return numValue < range.low
+      ? `Result is below the reference interval (${refRange}).`
+      : `Result is above the reference interval (${refRange}).`;
+  }
+
+  if (range.type === 'upper') {
+    return `Result is above the upper reference limit (${refRange}).`;
+  }
+
+  return `Result is below the lower reference limit (${refRange}).`;
+}
+
 // --- LANGUAGE TRANSLATION MAP (Reliable fallback when AI fails) ---
 const TRANSLATION_MAP = {
   'SIMPLIFIED PLAIN ENGLISH': {
@@ -193,7 +274,7 @@ export class LabBridgeEngine {
               reject(new Error('Failed to parse response from Groq: ' + e.message));
             }
           } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+            reject(providerHttpError('Groq', res.statusCode));
           }
         });
       });
@@ -251,7 +332,7 @@ export class LabBridgeEngine {
               reject(new Error('Failed to parse response from Gemini: ' + e.message));
             }
           } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+            reject(providerHttpError('Gemini', res.statusCode));
           }
         });
       });
@@ -305,7 +386,7 @@ export class LabBridgeEngine {
               reject(new Error('Failed to parse response from OpenAI: ' + e.message));
             }
           } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+            reject(providerHttpError('OpenAI', res.statusCode));
           }
         });
       });
@@ -350,7 +431,7 @@ export class LabBridgeEngine {
               reject(new Error('Failed to parse response from Vambo: ' + e.message));
             }
           } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+            reject(providerHttpError('Vambo', res.statusCode));
           }
         });
       });
@@ -438,6 +519,7 @@ export class LabBridgeEngine {
 
   // --- AI CLINICAL SIGNIFICANCE (reads raw finding, internal note for scientist) ---
   async generateClinicalSignificance(testName, rawFinding) {
+    if (this.isSensitiveTest(testName)) return null;
     const safeFinding = this.sanitizeForPrompt(rawFinding, 3000);
     if (!safeFinding) return null;
 
@@ -540,33 +622,42 @@ export class LabBridgeEngine {
   }
 
   // --- SEVERITY GRADING FOR NUMERIC TESTS ---
-  computeSeverity(value, refRange, testName) {
-    const numVal = parseFloat(value);
-    const rangeParts = (refRange || '').split('-').map(x => parseFloat(x.trim()));
+  computeSeverity(value, refRange) {
+    const numVal = Number.parseFloat(value);
+    const range = parseReferenceRange(refRange);
 
-    if (rangeParts.length !== 2 || isNaN(rangeParts[0]) || isNaN(rangeParts[1]) || isNaN(numVal)) {
+    if (!range || !Number.isFinite(numVal)) {
       return { severity: 'UNKNOWN', direction: null, isCritical: false };
     }
 
-    const [low, high] = rangeParts;
-    const rangeSpan = high - low;
-
-    if (numVal >= low && numVal <= high) {
+    if (isReferenceInRange(numVal, range)) {
       return { severity: 'NORMAL', direction: null, isCritical: false };
     }
 
     let deviation;
     let direction;
+    let scale;
 
-    if (numVal > high) {
-      deviation = numVal - high;
+    if (range.type === 'between') {
+      const isHigh = numVal > range.high;
+      direction = isHigh ? 'HIGH' : 'LOW';
+      deviation = isHigh ? numVal - range.high : range.low - numVal;
+      scale = range.high - range.low;
+    } else if (range.type === 'upper') {
       direction = 'HIGH';
+      deviation = numVal - range.limit;
+      scale = Math.abs(range.limit) || 1;
     } else {
-      deviation = low - numVal;
       direction = 'LOW';
+      deviation = range.limit - numVal;
+      scale = Math.abs(range.limit) || 1;
     }
 
-    const relativeDev = deviation / rangeSpan;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return { severity: `MILD_${direction}`, direction, isCritical: false };
+    }
+
+    const relativeDev = deviation / scale;
 
     if (relativeDev < 0.3) {
       return { severity: `MILD_${direction}`, direction, isCritical: false };
@@ -637,30 +728,34 @@ export class LabBridgeEngine {
   calculateConfidence(value, refRange, testName, severity) {
     let score = 0.85;
     const reasons = [];
-    console.log('\n🔢 Confidence Calculation Inputs:');
-    console.log('   Value:', value, '| Ref Range:', refRange, '| Test:', testName);
 
-    const numVal = parseFloat(value);
-    const rangeParts = (refRange || '').split('-').map(x => parseFloat(x.trim()));
-    const hasNumericRange = rangeParts.length === 2 && !isNaN(rangeParts[0]) && !isNaN(rangeParts[1]);
+    const numVal = Number.parseFloat(value);
+    const range = parseReferenceRange(refRange);
 
-    if (!isNaN(numVal) && hasNumericRange) {
+    if (Number.isFinite(numVal) && range) {
       score += 0.05;
       reasons.push('Numeric result with defined reference interval');
 
-      const deviation = Math.abs(numVal - ((rangeParts[0] + rangeParts[1]) / 2));
-      const rangeSpan = rangeParts[1] - rangeParts[0];
-      const relativeDev = deviation / rangeSpan;
+      if (range.type === 'between') {
+        const center = (range.low + range.high) / 2;
+        const scale = range.high - range.low;
+        const relativeDev = Math.abs(numVal - center) / scale;
 
-      if (relativeDev < 0.5) {
+        if (relativeDev < 0.5) {
+          score += 0.05;
+          reasons.push('Result within calculable deviation bounds');
+        } else if (relativeDev < 1.0) {
+          score += 0.02;
+          reasons.push('Moderate deviation from reference');
+        } else {
+          score -= 0.15;
+          reasons.push('Extreme deviation - confidence reduced');
+        }
+      } else if (severity === 'NORMAL') {
         score += 0.05;
-        reasons.push('Result within calculable deviation bounds');
-      } else if (relativeDev < 1.0) {
-        score += 0.02;
-        reasons.push('Moderate deviation from reference');
+        reasons.push('Result within one-sided reference limit');
       } else {
-        score -= 0.15;
-        reasons.push('Extreme deviation — confidence reduced');
+        reasons.push('Result outside one-sided reference limit');
       }
 
       if (severity && severity.startsWith('CRITICAL')) {
@@ -712,7 +807,6 @@ export class LabBridgeEngine {
 
     // ==================== QUALITATIVE TEST PATH ====================
     if (isQualitative) {
-      console.log('\n🧪 QUALITATIVE TEST DETECTED:', safeTestName);
 
       const template = this.getQualitativeTemplate(safeTestName, safeRawFinding || safeValue);
       const englishMessage = template.english;
@@ -767,14 +861,12 @@ export class LabBridgeEngine {
       const confidenceData = this.calculateConfidence(safeValue, safeRefRange, safeTestName, severity);
 
       // AI reads the raw finding and returns a very short clinical significance for the scientist
-      const clinicalSignificance = await this.generateClinicalSignificance(safeTestName, safeRawFinding || safeValue)
-        || `Finding recorded for ${safeTestName}. Correlate clinically.`;
+      const clinicalSignificance = this.isSensitiveTest(safeTestName)
+        ? 'Sensitive result recorded. Discuss directly with the requesting clinician.'
+        : (await this.generateClinicalSignificance(safeTestName, safeRawFinding || safeValue)
+          || `Finding recorded for ${safeTestName}. Correlate clinically.`);
 
       console.log('\n📤 QUALITATIVE OUTPUT ────────────────────────────────────');
-      console.log('   Template:', englishMessage);
-      console.log('   Translation:', patientTranslation);
-      console.log('   Clinical Significance:', clinicalSignificance);
-      console.log('   Severity:', severity);
       console.log('   Provider:', usedProvider);
       console.log('─────────────────────────────────────────────────────────\n');
 
@@ -799,8 +891,49 @@ export class LabBridgeEngine {
     const severityData = this.computeSeverity(safeValue, safeRefRange, safeTestName);
     const severity = severityData.severity;
     const isCritical = severityData.isCritical;
+    const sensitiveTest = this.isSensitiveTest(safeTestName);
 
-    const englishMessage = this.buildPatientMessage(safeTestName, severity, safeLanguage);
+    const englishMessage = sensitiveTest
+      ? translateTemplate('discuss', safeTestName, 'SIMPLIFIED PLAIN ENGLISH')
+      : this.buildPatientMessage(safeTestName, severity, safeLanguage);
+
+    if (sensitiveTest) {
+      const translationResult = await this.translateMessage(englishMessage, safeLanguage);
+      let patientTranslation = translationResult
+        ? translationResult.text
+        : translateTemplate('discuss', safeTestName, safeLanguage);
+      patientTranslation = String(patientTranslation || '')
+        .replace(/^[:\-\s*#\s\[\]A-Z_:]+/, '')
+        .trim();
+
+      if (!this.applyHardcodedGuardrails(patientTranslation)) {
+        return this.buildBlockedResult({
+          observation: `${safeTestName}: ${safeValue}. Reference: ${safeRefRange}.`,
+          referenceComparison: 'Result requires manual review.',
+          provider: translationResult ? `Template + ${translationResult.provider}` : 'Template Translation (AI offline)'
+        });
+      }
+
+      const referenceComparison = describeReferenceComparison(safeValue, safeRefRange);
+      const confidenceData = this.calculateConfidence(safeValue, safeRefRange, safeTestName, severity);
+      console.log(`[ai] Sensitive numeric result processed locally provider=${translationResult?.provider || 'Template Translation (AI offline)'}`);
+
+      return {
+        observation: `${safeTestName}: ${safeValue}. Reference: ${safeRefRange}.`,
+        referenceComparison,
+        significance: 'Sensitive result recorded. Discuss directly with the requesting clinician.',
+        technicalNotes: `Sensitive result. Language: ${safeLanguage}.`,
+        patientSummary: patientTranslation,
+        isCritical,
+        severity,
+        provider: translationResult ? `Template + ${translationResult.provider}` : 'Template Translation (AI offline)',
+        blocked: false,
+        confidence: confidenceData.score,
+        confidenceReasons: confidenceData.reasons,
+        qcVerified: true,
+        rawFinding: null
+      };
+    }
 
     const inputPayload = JSON.stringify({
       test: safeTestName,
@@ -906,10 +1039,9 @@ export class LabBridgeEngine {
       analysisText = payloadObj.analysis || 'LOW_ALERT: Auto-extracted';
 
       console.log('\n🤖 AGENT 1 (Scientist Review) ──────────────────────────');
-      console.log('   Raw Analysis:', analysisText);
       console.log('   Provider:', usedProvider);
     } catch (parseError) {
-      console.error('AI_RESPONSE_PARSE_ERROR:', rawResponse);
+      console.error('[ai] Provider response parse failure');
       throw new Error('AI returned invalid format. Please retry.');
     }
 
@@ -928,7 +1060,6 @@ export class LabBridgeEngine {
     if (translationResult) {
       patientTranslation = translationResult.text;
       console.log('\n💬 AGENT 3 (Patient Communicator) ───────────────────────');
-      console.log('   Translation:', patientTranslation);
       console.log('   Translator:', translationResult.provider);
       console.log('   Language:', safeLanguage);
     } else {
@@ -938,7 +1069,6 @@ export class LabBridgeEngine {
       else if (severity.startsWith('CRITICAL')) templateKey = 'discuss';
       patientTranslation = translateTemplate(templateKey, safeTestName, safeLanguage);
       console.log('\n💬 AGENT 3 (Patient Communicator) ───────────────────────');
-      console.log('   Translation (template fallback):', patientTranslation);
     }
 
     patientTranslation = sanitizeResult(patientTranslation);
@@ -957,7 +1087,6 @@ export class LabBridgeEngine {
       console.log('   📝 Fallback: Professional nullification applied');
       console.log('\n📤 FINAL OUTPUT ──────────────────────────────────────────');
       console.log('   Status: BLOCKED');
-      console.log('   Observation:', `${safeTestName}: ${safeValue}. Reference: ${safeRefRange}.`);
       console.log('   Patient Summary: [Output blocked by safety filter]');
       console.log('   Confidence: 0%');
       console.log('─────────────────────────────────────────────────────────\n');
@@ -970,17 +1099,7 @@ export class LabBridgeEngine {
     console.log('   ✅ PASSED: No forbidden content detected');
 
     const observation = `${safeTestName}: ${safeValue}. Reference range: ${safeRefRange}.`;
-
-    let referenceComparison = 'Result within normal parameters.';
-    const numVal = parseFloat(safeValue);
-    const rangeParts = (safeRefRange || '').split('-').map(x => parseFloat(x.trim()));
-    if (rangeParts.length === 2 && !isNaN(rangeParts[0]) && !isNaN(rangeParts[1]) && !isNaN(numVal)) {
-      if (numVal < rangeParts[0]) {
-        referenceComparison = `Result is below the reference interval (${safeRefRange}).`;
-      } else if (numVal > rangeParts[1]) {
-        referenceComparison = `Result is above the reference interval (${safeRefRange}).`;
-      }
-    }
+    const referenceComparison = describeReferenceComparison(safeValue, safeRefRange);
 
     let significance = 'No significant deviation detected.';
     if (isCritical) {
@@ -993,16 +1112,9 @@ export class LabBridgeEngine {
     const confidenceData = this.calculateConfidence(safeValue, safeRefRange, safeTestName, severity);
 
     console.log('\n📊 BACKEND CONFIDENCE CALCULATOR ────────────────────────');
-    console.log('   Score:', Math.round(confidenceData.score * 100) + '%');
-    confidenceData.reasons.forEach(r => console.log('   •', r));
 
     console.log('\n📤 FINAL OUTPUT ──────────────────────────────────────────');
     console.log('   Status: APPROVED');
-    console.log('   Severity:', severity);
-    console.log('   Observation:', observation);
-    console.log('   Reference Comparison:', referenceComparison);
-    console.log('   Significance:', significance);
-    console.log('   Patient Summary:', patientTranslation);
     console.log('   Confidence:', Math.round(confidenceData.score * 100) + '%');
     console.log('   QC Verified:', true);
     console.log('─────────────────────────────────────────────────────────\n');
@@ -1088,7 +1200,6 @@ export class LabBridgeEngine {
       const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(`\\b${escapedTerm}\\b`, 'i');
       if (regex.test(lowerText)) {
-        console.warn(`🛡️ Guardrail hit: "${term}"`);
         return false;
       }
     }

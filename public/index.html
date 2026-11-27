@@ -676,6 +676,10 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function shortHash(h) {
   if (!h) return '--';
   return h.length > 10 ? `${h.slice(0, 4)}...${h.slice(-4)}` : h;
@@ -1097,13 +1101,60 @@ function updateFormNotes() {
 }
 
 // Status Helpers
+function parseRefRange(refRange) {
+  if (refRange === null || refRange === undefined) return null;
+  const text = String(refRange).trim()
+    .replace(/\u2212/g, '-')
+    .replace(/\u2264/g, '<=')
+    .replace(/\u2265/g, '>=')
+    .replace(/\s+/g, ' ');
+  if (!text) return null;
+
+  let match = text.match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) {
+    const low = parseFloat(match[1]);
+    const high = parseFloat(match[2]);
+    return Number.isFinite(low) && Number.isFinite(high) && low <= high
+      ? { type: 'between', low, high }
+      : null;
+  }
+
+  match = text.match(/^(<=|<)\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) return { type: 'upper', limit: parseFloat(match[2]), inclusive: match[1] === '<=' };
+
+  match = text.match(/^(>=|>)\s*(-?\d+(?:\.\d+)?)$/);
+  if (match) return { type: 'lower', limit: parseFloat(match[2]), inclusive: match[1] === '>=' };
+
+  match = text.match(/^(?:less than|below|under)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'upper', limit: parseFloat(match[1]), inclusive: false };
+
+  match = text.match(/^(?:up to|at most|no more than|not more than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'upper', limit: parseFloat(match[1]), inclusive: true };
+
+  match = text.match(/^(?:greater than|above|over|more than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'lower', limit: parseFloat(match[1]), inclusive: false };
+
+  match = text.match(/^(?:at least|no less than|not less than)\s*(-?\d+(?:\.\d+)?)$/i);
+  if (match) return { type: 'lower', limit: parseFloat(match[1]), inclusive: true };
+
+  return null;
+}
+
 function computeStatus(value, refRange) {
   const numVal = parseFloat(value);
-  const rangeParts = (refRange || '').split('-').map(x => parseFloat(x.trim()));
-  if (rangeParts.length === 2 && !isNaN(rangeParts[0]) && !isNaN(rangeParts[1]) && !isNaN(numVal)) {
-    if (numVal < rangeParts[0]) return 'below';
-    if (numVal > rangeParts[1]) return 'above';
-    return 'normal';
+  const range = parseRefRange(refRange);
+  if (range && !isNaN(numVal)) {
+    if (range.type === 'between') {
+      if (numVal < range.low) return 'below';
+      if (numVal > range.high) return 'above';
+      return 'normal';
+    }
+    if (range.type === 'upper') {
+      return range.inclusive ? (numVal <= range.limit ? 'normal' : 'above') : (numVal < range.limit ? 'normal' : 'above');
+    }
+    if (range.type === 'lower') {
+      return range.inclusive ? (numVal >= range.limit ? 'normal' : 'below') : (numVal > range.limit ? 'normal' : 'below');
+    }
   }
   const v = (value || '').trim().toLowerCase();
   if (v === 'negative' || v === 'non-reactive' || v === 'no growth' || v === 'no organism seen' || v === 'no parasites seen' || v === 'no ova/parasites seen' || v === 'all negative' || v === 'no fungal elements' || v === 'no abnormal findings' || v === 'sensitive to all tested' || v === 'aa') return 'clear';
@@ -1354,9 +1405,10 @@ function closeReport() {
   }
 }
 
-async function viewReportFromArchive(patientId) {
+async function viewReportFromArchive(patientId, recordId) {
   try {
-    const data = await apiFetch(`/api/records/${encodeURIComponent(patientId)}`);
+    const query = recordId ? `?recordId=${encodeURIComponent(recordId)}` : '';
+    const data = await apiFetch(`/api/records/${encodeURIComponent(patientId)}${query}`);
     document.querySelectorAll('.tab-pane').forEach(t => t.classList.add('hidden-workspace'));
     document.getElementById('input-test-tab').classList.remove('hidden-workspace');
     document.getElementById('dept-selection-section').classList.add('hidden-workspace');
@@ -1396,8 +1448,12 @@ function renderClinicianRows(records) {
         <td class="p-4 text-slate-500 font-mono">${escapeHtml(r.patientId)}</td>
         <td class="p-4">${escapeHtml(r.testName)} (${escapeHtml(r.value)} ${escapeHtml(r.unit)})</td>
         <td class="p-4 text-center"><span class="badge bg-medical-emeraldLight text-medical-emerald border-emerald-200">APPROVED</span></td>
-        <td class="p-4 text-right pr-6"><button onclick="viewReportFromArchive('${escapeHtml(r.patientId)}')" class="text-medical-blue hover:text-blue-800 text-xs font-semibold">View Report</button></td>
+        <td class="p-4 text-right pr-6"><button data-patient-id="${escapeAttr(r.patientId)}" data-record-id="${escapeAttr(r.recordId)}" class="view-report-btn text-medical-blue hover:text-blue-800 text-xs font-semibold">View Report</button></td>
       </tr>`).join('');
+
+  tbody.querySelectorAll('.view-report-btn').forEach(button => {
+    button.addEventListener('click', () => viewReportFromArchive(button.dataset.patientId, button.dataset.recordId));
+  });
 }
 
 function filterClinicianTable() {
